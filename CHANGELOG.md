@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Documented that `pow` is not exact on integer results, so `floor(pow(x, n))`
+  can be one low — the failure mode behind off-by-one cost tables and level
+  curves. New README section "Do not `floor` a `pow`", plus caveats on `pow`,
+  `sqr`, `cube`, `cbrt`, `root` and `/`. No behaviour changed: the inexactness
+  is inherited from break_eternity.js, which produces bit-identical answers,
+  and `test/precision_test.dart` now pins it so it cannot be "fixed" by
+  accident.
+
 ## 0.1.0
 
 Initial release: the core `Decimal` value type.
