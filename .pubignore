@@ -1,0 +1,25 @@
+# Development-only material, excluded from the published pub.dev archive.
+#
+# NOTE: this file REPLACES .gitignore for `dart pub publish` rather than adding
+# to it, so every build artefact .gitignore covers has to be repeated here or it
+# would ship in the (immutable) pub.dev archive.
+.dart_tool/
+build/
+coverage/
+doc/
+node_modules/
+*.iml
+.idea/
+.vscode/
+.DS_Store
+
+# The vendored upstream sources are used for fixture generation and
+# line-by-line verification during development; consumers do not need them.
+reference/
+tool/
+benchmark/
+.github/
+
+# The whole test tree stays out: fixtures/ alone is ~700 KB of generated data,
+# and shipping the suites without it would leave a test that cannot run.
+test/

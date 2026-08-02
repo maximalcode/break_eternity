@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # Format, analyze and test on every supported OS and on both the oldest
+  # supported SDK and the current stable one.
+  test:
+    name: ${{ matrix.os }} / Dart ${{ matrix.sdk }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        sdk: [stable, "3.6"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ matrix.sdk }}
+
+      - name: Install dependencies
+        run: dart pub get
+
+      - name: Verify formatting
+        run: dart format --output=none --set-exit-if-changed .
+
+      - name: Analyze
+        run: dart analyze --fatal-infos
+
+      - name: Run tests
+        run: dart test
+
+  # Web/VM parity is a first-class concern for this package, not a nice-to-have.
+  #
+  # Decimal stores sign/layer/mag as three doubles. On the Dart VM `int` and
+  # `double` are distinct types with distinct semantics; when Dart is compiled
+  # to JavaScript they collapse onto a single IEEE-754 double, so integer
+  # overflow, truncation and `is int` checks all behave differently. A previous
+  # Dart big-number package died from exactly that divergence: code that was
+  # correct on the VM produced different numbers in the browser, which for an
+  # idle game means corrupted save files that only reproduce on one platform.
+  #
+  # Running the identical suite compiled to JS catches that class of bug the
+  # day it is introduced rather than in a bug report from a player. This job is
+  # deliberately separate from the matrix above: it only needs one OS and one
+  # SDK, and a failure here should be legible as "VM passed, web did not"
+  # rather than hiding inside a matrix cell.
+  test_js:
+    name: Tests compiled to JavaScript
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+
+      - name: Install dependencies
+        run: dart pub get
+
+      - name: Run tests on the Node platform (dart2js)
+        run: dart test -p node
+
+      - name: Run tests in headless Chrome (dart2js)
+        run: dart test -p chrome

@@ -1,0 +1,21 @@
+# https://dart.dev/tools/private-files
+# Created by `dart pub`
+.dart_tool/
+
+# Avoid committing pubspec.lock for library packages; see
+# https://dart.dev/tools/pub/private-files#pubspec-lock.
+pubspec.lock
+
+# Build output, coverage, and generated API docs (`dart doc` writes doc/api/)
+build/
+coverage/
+doc/
+
+# Node (fixture generation tooling)
+node_modules/
+
+# Editors / OS
+.idea/
+.vscode/
+*.iml
+.DS_Store
