@@ -743,6 +743,156 @@ class Decimal implements Comparable<Decimal> {
         : 0.0;
   }
 
+  /// Whether this value is a whole number.
+  ///
+  /// False for [nan] and the infinities. True for everything at layer 1 and
+  /// above: those all exceed 2^53, where consecutive doubles are more than 1
+  /// apart, so the representation has no room left to hold a fraction.
+  bool get isInteger {
+    if (!layer.isFinite || !mag.isFinite) {
+      return false;
+    }
+    if (layer == 0) {
+      return mag == mag.truncateToDouble();
+    }
+    return true;
+  }
+
+  /// This value as an `int`, truncated toward zero.
+  ///
+  /// Throws unless the value is finite and still at layer 0 — that is, below
+  /// about 9e15 ([expLimit]) in absolute value. The bound is not arbitrary and
+  /// it is not a shortcoming of this method. At layer 1 and above, [mag] holds
+  /// a *logarithm* rather than the value, so the exact integer is already
+  /// gone: `Decimal.fromNum(9005000000000000)` round-trips through `toDouble`
+  /// as 9005000000000007. There is no exact `int` to hand back, so this
+  /// refuses rather than inventing one.
+  ///
+  /// The same bound applies on every platform, deliberately. Dart's `int` is
+  /// 64-bit on the VM and a `double` under dart2js, and this package's whole
+  /// design principle is that results do not change between them — see the
+  /// note on [layer] in the README.
+  ///
+  /// ```dart
+  /// print(42.5.dec.toInt());     // 42, truncated toward zero
+  /// print((-42.5).dec.toInt());  // -42, not -43
+  /// ```
+  ///
+  /// Prefer [toIntOrNull] where the value may legitimately be out of range,
+  /// [toBigInt] to go beyond layer 0, or [toIntClamped] when saturating is the
+  /// behaviour you actually want.
+  ///
+  /// Note that `toDouble().toInt()` is **not** a safe substitute: on the VM it
+  /// saturates silently at the int64 boundary, so `Decimal.parse('1e20')`
+  /// becomes 9223372036854775807 with no error at all.
+  int toInt() {
+    final int? result = toIntOrNull();
+    if (result != null) {
+      return result;
+    }
+    if (!isFinite) {
+      throw UnsupportedError('Cannot convert $this to an int');
+    }
+    throw RangeError(
+      'Cannot convert $this to an int exactly: it has left layer 0, where '
+      'mag holds a logarithm rather than the value itself, so no exact '
+      'integer is recoverable. Use toBigInt() for the approximate value, '
+      'or toIntClamped().',
+    );
+  }
+
+  /// This value as an `int` truncated toward zero, or null if it will not fit.
+  ///
+  /// The non-throwing [toInt]; see there for why the bound is layer 0.
+  int? toIntOrNull() {
+    // Layer 1 and above store a logarithm, so `toDouble()` reconstructs the
+    // value through `pow` and loses the low digits. Refusing is the only
+    // honest answer; `toBigInt` is the escape hatch for callers who want the
+    // approximation and know it is one.
+    if (!isFinite || layer != 0) {
+      return null;
+    }
+    final double value = sign * mag;
+    if (value.abs() > _maxExactInt) {
+      return null;
+    }
+    return value.truncateToDouble().toInt();
+  }
+
+  /// This value as an `int`, saturating at [min] and [max] instead of
+  /// throwing.
+  ///
+  /// Both bounds default to `±9e15`, the range in which a [Decimal] still
+  /// holds an exact integer. Unlike `toDouble().toInt()`, the saturation here
+  /// is the behaviour you asked for rather than a silent surprise.
+  ///
+  /// ```dart
+  /// print(Decimal.parse('1e40').toIntClamped());         // 9000000000000000
+  /// print(Decimal.parse('1e40').toIntClamped(max: 100)); // 100
+  /// ```
+  ///
+  /// Throws on [nan], which has no sensible clamp. The infinities saturate to
+  /// the corresponding bound.
+  int toIntClamped({
+    int min = -_maxExactIntValue,
+    int max = _maxExactIntValue,
+  }) {
+    if (isNaN) {
+      throw ArgumentError('Cannot clamp NaN to an int');
+    }
+    if (min > max) {
+      throw ArgumentError('min ($min) must not exceed max ($max)');
+    }
+    if (!isFinite) {
+      return sign > 0 ? max : min;
+    }
+    final int? exact = toIntOrNull();
+    if (exact != null) {
+      return exact < min ? min : (exact > max ? max : exact);
+    }
+    // Finite but off the end of layer 0, so it is larger than any bound we
+    // could return; saturate in the direction of its sign.
+    return sign > 0 ? max : min;
+  }
+
+  /// This value as a `BigInt`, truncated toward zero.
+  ///
+  /// Where [toInt] refuses past layer 0, this keeps going for as long as the
+  /// value fits a `double` at all — up to about 1.8e308. Be clear about what
+  /// that buys: the result is the exact value of the underlying `double`, not
+  /// the exact value of whatever arithmetic produced it. Past layer 0 those
+  /// stopped being the same thing, which is exactly why [toInt] refuses.
+  ///
+  /// Throws on [nan] and on anything a `double` cannot hold, which is
+  /// everything at layer 2 and above.
+  BigInt toBigInt() {
+    final double value = toDouble();
+    if (!value.isFinite) {
+      throw UnsupportedError('Cannot convert $this to a BigInt');
+    }
+    return BigInt.from(value.truncateToDouble());
+  }
+
+  /// Truncating division, as `~/` is for `int` and `double`.
+  ///
+  /// Truncates toward zero, so `(-7).dec ~/ 2.dec` is `-3`. This is worth
+  /// having precisely because the obvious hand-rolled version is wrong:
+  /// `(a / b).floor()` rounds toward negative infinity and gives `-4`.
+  /// [truncate] is the correct analogue of `~/`; [floor] is not.
+  ///
+  /// Inherits the inexactness of `/` — see the caveat on [operator /] — so
+  /// treat a result that lands on an exact boundary with the same care.
+  Decimal operator ~/(Decimal other) => (this / other).truncate();
+
+  /// The largest integer a [Decimal] holds exactly, as a `double`. This is
+  /// [expLimit] — the point at which normalisation moves to layer 1 and [mag]
+  /// becomes a logarithm.
+  static const double _maxExactInt = expLimit;
+
+  /// The same bound as an `int`, for the [toIntClamped] defaults, which must
+  /// be compile-time constants.
+  static const int _maxExactIntValue = 9000000000000000;
+
   /// A string representation, in the notation that fits the magnitude.
   ///
   /// * layer 0 with `1e-7 < mag < 1e21` (or zero): a plain number, `12.5`;
