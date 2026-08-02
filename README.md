@@ -91,8 +91,8 @@ A longer, idle-game-flavoured walkthrough lives in
 | Extension | `DecimalNumExtension.dec` — `5.dec`, `1.5.dec` |
 | Constants | `zero`, `one`, `negativeOne`, `two`, `ten`, `nan`, `infinity`, `negativeInfinity`, `numberMax`, `numberMin`, `layerSafeMax`, `layerSafeMin`, `layerMax`, `layerMin` |
 | Components | `sign`, `layer`, `mag`, `mantissa`, `exponent`, `signum` |
-| Predicates | `isNaN`, `isFinite`, `isInfinite`, `isNegative`, `isZero` |
-| Arithmetic | `+`, `-` (binary and unary), `*`, `/`, `%`, `mod()`, `abs()`, `reciprocal()` |
+| Predicates | `isNaN`, `isFinite`, `isInfinite`, `isNegative`, `isZero`, `isInteger` |
+| Arithmetic | `+`, `-` (binary and unary), `*`, `/`, `~/`, `%`, `mod()`, `abs()`, `reciprocal()` |
 | Rounding | `floor()`, `ceil()`, `round()`, `truncate()` |
 | Ordering | `<`, `<=`, `>`, `>=`, `==`, `compareTo`, `compareMagnitudeTo`, `max`, `min`, `clamp`, `equalsWithin`, `compareWithin` |
 | Logarithms | `log10()`, `absLog10()`, `pLog10()`, `log2()`, `ln()`, `log(base)` |
@@ -100,7 +100,7 @@ A longer, idle-game-flavoured walkthrough lives in
 | Tetration | `tetrate()`, `iteratedExp()`, `iteratedLog()`, `slog()`, `layerAdd()`, `layerAdd10()`, `lambertW()` |
 | Pentation | `pentate()`, `pentaLog()` |
 | Game series helpers | `Decimal.affordGeometricSeries`, `Decimal.sumGeometricSeries`, `Decimal.affordArithmeticSeries`, `Decimal.sumArithmeticSeries`, `Decimal.efficiencyOfPurchase` |
-| Conversion | `toDouble()`, `toString()`, `toStringAsFixed()`, `toStringAsExponential()`, `toStringAsPrecision()`, `toJson()` |
+| Conversion | `toDouble()`, `toInt()`, `toIntOrNull()`, `toIntClamped()`, `toBigInt()`, `toString()`, `toStringAsFixed()`, `toStringAsExponential()`, `toStringAsPrecision()`, `toJson()` |
 
 ### Buying a batch without a loop
 
@@ -318,6 +318,34 @@ API is not idiomatic Dart.
   `pentate`, `iteratedLog` and `layerAdd` take a plain number for the height,
   exactly as the JS original does — a tower taller than 1.8e308 is not
   representable anyway. Payloads and bases are `Decimal`.
+- **There are `int` conversions and a `~/` operator, which the reference has
+  no need for.** JavaScript has one numeric type; Dart has two, and real code
+  needs a genuine `int` for list indices, RNG bounds, `Duration` and database
+  columns. See below.
+
+### Getting an `int` back out
+
+`toInt()` truncates toward zero, like `int` and `double` do, and **throws
+rather than guessing** when the value will not fit. `toIntOrNull()` returns
+null instead, `toIntClamped()` saturates at bounds you choose, and `toBigInt()`
+keeps going for as long as a `double` can hold the value.
+
+The limit is layer 0 — roughly `±9e15`. That is not a shortcoming of the
+conversion, it is where the number stops existing. At layer 1 and above `mag`
+holds a *logarithm* rather than the value, so there is no exact integer left to
+return: `Decimal.fromNum(9005000000000000)` comes back through `toDouble` as
+`9005000000000007`. Refusing is the only honest answer, and `toBigInt()` is the
+escape hatch when an approximation is what you actually want.
+
+Do not reach for `toDouble().toInt()` instead. On the VM it **saturates
+silently** — `Decimal.parse('1e20').toDouble().toInt()` is `9223372036854775807`
+with no error at all, which then shows up somewhere far away as an ETA of
+"now" instead of "never".
+
+`~/` exists for a similar reason: the obvious hand-rolled version is wrong.
+`(a / b).floor()` rounds toward negative infinity, so it gives `-4` where
+`-7 ~/ 2` is `-3`. `truncate()` is the correct analogue of `~/`; `floor()` is
+not.
 
 ## Credits and licence
 
