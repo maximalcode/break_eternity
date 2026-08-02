@@ -149,8 +149,10 @@ void _runFixtureFile(File file) {
         ..writeln();
     }
     if (missing > 0) {
-      buffer.writeln('... and $missing more (report capped at '
-          '$_maxReportedFailures cases).');
+      buffer.writeln(
+        '... and $missing more (report capped at '
+        '$_maxReportedFailures cases).',
+      );
     }
     fail(buffer.toString().trimRight());
   }
@@ -208,9 +210,8 @@ final Map<String, _CaseRunner> _ops = <String, _CaseRunner>{
   // `normalize` is the odd one out: its "a" is a RAW, possibly invalid triple
   // rather than an already-normalised Decimal, so it is fed straight to the
   // normalising factory.
-  'normalize': (_FixtureCase c) => _Outcome.value(
-        Decimal.fromComponents(c.rawA[0], c.rawA[1], c.rawA[2]),
-      ),
+  'normalize': (_FixtureCase c) =>
+      _Outcome.value(Decimal.fromComponents(c.rawA[0], c.rawA[1], c.rawA[2])),
 };
 
 /// `cmp` is stored as the `Decimal` form of the comparison result, so it can go
@@ -273,16 +274,11 @@ class _FixtureCase {
 
   factory _FixtureCase.decode(String op, int index, Map<String, Object?> json) {
     final List<double> a = _decodeTriple(op, index, 'a', json['a']);
-    final List<double>? b =
-        json['b'] == null ? null : _decodeTriple(op, index, 'b', json['b']);
+    final List<double>? b = json['b'] == null
+        ? null
+        : _decodeTriple(op, index, 'b', json['b']);
     final List<double> r = _decodeTriple(op, index, 'r', json['r']);
-    return _FixtureCase(
-      op: op,
-      index: index,
-      rawA: a,
-      rawB: b,
-      expected: r,
-    );
+    return _FixtureCase(op: op, index: index, rawA: a, rawB: b, expected: r);
   }
 
   final String op;
@@ -356,12 +352,7 @@ class _FixtureCase {
 ///
 /// JSON has no literal for the non-finite doubles, so the generator writes them
 /// as the strings `"NaN"`, `"Infinity"` and `"-Infinity"`.
-List<double> _decodeTriple(
-  String op,
-  int index,
-  String field,
-  Object? value,
-) {
+List<double> _decodeTriple(String op, int index, String field, Object? value) {
   if (value is! List<Object?> || value.length != 3) {
     fail('$op case $index: field "$field" is not a 3-element array ($value).');
   }
@@ -390,8 +381,10 @@ double _decodeComponent(String op, int index, String field, Object? value) {
       return parsed;
     }
   }
-  fail('$op case $index: field "$field" holds an undecodable component '
-      '($value). Expected a number or "NaN"/"Infinity"/"-Infinity".');
+  fail(
+    '$op case $index: field "$field" holds an undecodable component '
+    '($value). Expected a number or "NaN"/"Infinity"/"-Infinity".',
+  );
 }
 
 // ---------------------------------------------------------------------------

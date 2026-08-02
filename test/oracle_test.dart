@@ -164,7 +164,8 @@ void _expectClose(
   expect(
     error <= tolerance,
     isTrue,
-    reason: '$what\n'
+    reason:
+        '$what\n'
         '  double  : $expected\n'
         '  Decimal : $actual\n'
         '  relative error ${error.toStringAsExponential(3)} exceeds '
@@ -213,9 +214,9 @@ final List<double> _exactValues = _all.where(_roundTripsExactly).toList();
 /// to the JavaScript-generated fixtures.
 String? _remainderGuard(double a, double b) =>
     _roundTripsExactly(a) && _roundTripsExactly(b)
-        ? null
-        : 'an operand does not round-trip through Decimal exactly, and the '
-            'remainder of a perturbed operand is not comparable';
+    ? null
+    : 'an operand does not round-trip through Decimal exactly, and the '
+          'remainder of a perturbed operand is not comparable';
 
 /// Whether this pair trips the upstream `cmpabs` zero bug.
 ///
@@ -259,7 +260,8 @@ void _unaryGroup({
     for (final double a in values) {
       final String name = label(_label(a));
       final double want = onDouble(a);
-      final Object? skip = guard?.call(a) ??
+      final Object? skip =
+          guard?.call(a) ??
           _skipReason(want, zeroIsGenuine: zeroIsGenuine?.call(a) ?? true);
       test(name, () {
         _expectClose(onDecimal(a.dec).toDouble(), want, tolerance, name);
@@ -284,14 +286,16 @@ void _binaryGroup({
       for (final double b in values) {
         final String name = '${_label(a)} $symbol ${_label(b)}';
         final double want = onDouble(a, b);
-        final Object? skip = guard?.call(a, b) ??
-            _skipReason(
-              want,
-              zeroIsGenuine: zeroIsGenuine?.call(a, b) ?? true,
-            );
+        final Object? skip =
+            guard?.call(a, b) ??
+            _skipReason(want, zeroIsGenuine: zeroIsGenuine?.call(a, b) ?? true);
         test(name, () {
           _expectClose(
-              onDecimal(a.dec, b.dec).toDouble(), want, tolerance, name);
+            onDecimal(a.dec, b.dec).toDouble(),
+            want,
+            tolerance,
+            name,
+          );
         }, skip: skip);
       }
     }
@@ -407,7 +411,7 @@ void main() {
     // contains none, but the guard keeps the group honest if it grows.
     guard: (double a) => a < 0 && a.isFinite && a - a.floorToDouble() == 0.5
         ? 'Decimal.round() rounds halves towards +infinity (JavaScript '
-            'Math.round); double.roundToDouble() rounds them away from zero'
+              'Math.round); double.roundToDouble() rounds them away from zero'
         : null,
   );
 
@@ -591,7 +595,7 @@ void main() {
         // assertion behind.
         final Object? skip = _tripsCmpAbsZeroBug(a, b)
             ? 'upstream break_eternity.js bug: cmpabs treats zero as layer -0 '
-                'and so ranks |0| above any value below 1/9e15'
+                  'and so ranks |0| above any value below 1/9e15'
             : null;
         test(name, () {
           expect(

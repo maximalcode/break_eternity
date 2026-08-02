@@ -16,7 +16,10 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        sdk: [stable, "3.6"]
+        # "stable" tracks the latest release; the pinned version must match the
+        # lower bound in pubspec.yaml so a bad constraint fails here, not in a
+        # consumer's build.
+        sdk: [stable, "3.8"]
 
     steps:
       - uses: actions/checkout@v4

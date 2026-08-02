@@ -13,9 +13,14 @@ topics:
   - game-development
   - games
 
+# 3.8 is the floor `lints ^6.0.0` imposes, and CI tests exactly this version so
+# the constraint stays honest. The library code itself needs nothing newer.
 environment:
-  sdk: ^3.6.0
+  sdk: ^3.8.0
 
+# Lower bounds are the oldest versions that actually resolve and pass, not the
+# oldest that look plausible: `dart pub downgrade && dart test` is part of CI,
+# and pub.dev scores it.
 dev_dependencies:
   lints: ^6.0.0
-  test: ^1.25.6
+  test: ^1.31.0

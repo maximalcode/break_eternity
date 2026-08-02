@@ -882,11 +882,7 @@ class Decimal implements Comparable<Decimal> {
       }
       final double magdiff = math.pow(10, a.mag - log10(b.mag)).toDouble();
       final double mantissa = b.sign + a.sign * magdiff;
-      return _normalize(
-        mantissa.sign,
-        1,
-        log10(b.mag) + log10(mantissa.abs()),
-      );
+      return _normalize(mantissa.sign, 1, log10(b.mag) + log10(mantissa.abs()));
     }
 
     // Short-circuits 3 and 4: both operands are layer 1.
@@ -977,7 +973,8 @@ class Decimal implements Comparable<Decimal> {
 
     if ((a.layer == 2 && b.layer == 1) || (a.layer == 2 && b.layer == 2)) {
       // Multiplying at layer 2 is adding one layer down.
-      final Decimal newmag = _normalize(a.mag.sign, a.layer - 1, a.mag.abs()) +
+      final Decimal newmag =
+          _normalize(a.mag.sign, a.layer - 1, a.mag.abs()) +
           _normalize(b.mag.sign, b.layer - 1, b.mag.abs());
       return _normalize(
         a.sign * b.sign,
@@ -1330,7 +1327,7 @@ double _decimalPlaces(double value, int places) {
   final double numDigits = log10(value.abs()).ceilToDouble();
   final double rounded =
       _jsRound(value * math.pow(10, len - numDigits).toDouble()) *
-          math.pow(10, numDigits - len).toDouble();
+      math.pow(10, numDigits - len).toDouble();
   final double fractionDigits = math.max(len - numDigits, 0);
   if (fractionDigits.isNaN) {
     // `value` is NaN, so `numDigits` and `rounded` are NaN too. JavaScript's

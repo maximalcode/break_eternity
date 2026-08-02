@@ -60,8 +60,11 @@ void expectNormalised(Decimal d, String description) {
   );
 
   if (d.isInfinite) {
-    expect(d.layer, double.infinity,
-        reason: '$what: infinity is (s, inf, inf)');
+    expect(
+      d.layer,
+      double.infinity,
+      reason: '$what: infinity is (s, inf, inf)',
+    );
     expect(d.mag, double.infinity, reason: '$what: infinity is (s, inf, inf)');
     expect(d.sign.abs(), 1.0, reason: '$what: infinity has sign +-1');
     return;
@@ -423,7 +426,9 @@ void main() {
 
       expect(Decimal.fromNum(double.infinity), Decimal.infinity);
       expect(
-          Decimal.fromNum(double.negativeInfinity), Decimal.negativeInfinity);
+        Decimal.fromNum(double.negativeInfinity),
+        Decimal.negativeInfinity,
+      );
       expect(double.infinity.dec, Decimal.infinity);
       expect(Decimal.parse('Infinity'), Decimal.infinity);
       expect(Decimal.parse('-Infinity'), Decimal.negativeInfinity);
@@ -551,10 +556,7 @@ void main() {
       expect(big + Decimal.parse('1e82'), big);
       expect(big + Decimal.parse('-1e82'), big);
       // Same for the layer-1 / layer-0 mixed branch: |20 - log10(1)| > 17.
-      expect(
-        Decimal.parse('1e20') + Decimal.one,
-        Decimal.parse('1e20'),
-      );
+      expect(Decimal.parse('1e20') + Decimal.one, Decimal.parse('1e20'));
       // ...and the layer-0 / negative-layer branch: |-300 - 0| > 17.
       expect(Decimal.one + Decimal.parse('1e-300'), Decimal.one);
       expect(Decimal.parse('1e-300') + Decimal.one, Decimal.one);
@@ -951,49 +953,53 @@ void main() {
   // save, and cloud-synced or shared "import codes" cross a real trust
   // boundary — so `parse`/`tryParse` must terminate and must not throw.
   group('hostile input (security regressions)', () {
-    test('a zero magnitude at a huge layer resolves instantly, not eventually',
-        () {
-      // `(e^N)0` used to walk the layer-down loop one step at a time: roughly
-      // 60 days for N = 1e15, and genuinely forever for N >= 2^54, where
-      // `layer -= 1` stops changing the double at all. The answer is 1 for
-      // every N, which is what the reference computes the slow way.
-      const List<String> hostile = <String>[
-        '(e^18014398509481984)0', // 2^54, the smallest non-terminating case
-        '(e^1000000000000000)0',
-        '(e^10000000000000000000)0',
-        '(e^1e308)0',
-        '(e^200000)-0',
-        '(e^200000)0.0',
-        '(e^200000)+0',
-        '(e^200000)1e-400', // underflows to zero, so it hit the loop too
-      ];
-      for (final String source in hostile) {
-        final Stopwatch sw = Stopwatch()..start();
-        expect(Decimal.tryParse(source), Decimal.one, reason: source);
-        sw.stop();
-        expect(
-          sw.elapsedMilliseconds,
-          lessThan(500),
-          reason: '$source took ${sw.elapsedMilliseconds}ms',
-        );
-      }
-      // The short-circuit must not have changed the ordinary answers.
-      expect(Decimal.tryParse('(e^6)0'), Decimal.one);
-      expect(Decimal.tryParse('(e^1)0'), Decimal.one);
-    });
+    test(
+      'a zero magnitude at a huge layer resolves instantly, not eventually',
+      () {
+        // `(e^N)0` used to walk the layer-down loop one step at a time: roughly
+        // 60 days for N = 1e15, and genuinely forever for N >= 2^54, where
+        // `layer -= 1` stops changing the double at all. The answer is 1 for
+        // every N, which is what the reference computes the slow way.
+        const List<String> hostile = <String>[
+          '(e^18014398509481984)0', // 2^54, the smallest non-terminating case
+          '(e^1000000000000000)0',
+          '(e^10000000000000000000)0',
+          '(e^1e308)0',
+          '(e^200000)-0',
+          '(e^200000)0.0',
+          '(e^200000)+0',
+          '(e^200000)1e-400', // underflows to zero, so it hit the loop too
+        ];
+        for (final String source in hostile) {
+          final Stopwatch sw = Stopwatch()..start();
+          expect(Decimal.tryParse(source), Decimal.one, reason: source);
+          sw.stop();
+          expect(
+            sw.elapsedMilliseconds,
+            lessThan(500),
+            reason: '$source took ${sw.elapsedMilliseconds}ms',
+          );
+        }
+        // The short-circuit must not have changed the ordinary answers.
+        expect(Decimal.tryParse('(e^6)0'), Decimal.one);
+        expect(Decimal.tryParse('(e^1)0'), Decimal.one);
+      },
+    );
 
-    test('an oversized literal returns null instead of overflowing the stack',
-        () {
-      // Multi-megabyte digit runs used to raise StackOverflowError out of the
-      // regex engine. That is an Error, not an Exception, so it escaped
-      // `tryParse`'s "null on failure" contract entirely.
-      for (final int digits in <int>[5000, 4200000]) {
-        expect(Decimal.tryParse('1.${'2' * digits}e5'), isNull);
-      }
-      expect(() => Decimal.parse('9' * 100000), throwsFormatException);
-      // Just under the cap still parses.
-      expect(Decimal.tryParse('1.${'0' * 4000}e5'), Decimal.fromNum(100000));
-    });
+    test(
+      'an oversized literal returns null instead of overflowing the stack',
+      () {
+        // Multi-megabyte digit runs used to raise StackOverflowError out of the
+        // regex engine. That is an Error, not an Exception, so it escaped
+        // `tryParse`'s "null on failure" contract entirely.
+        for (final int digits in <int>[5000, 4200000]) {
+          expect(Decimal.tryParse('1.${'2' * digits}e5'), isNull);
+        }
+        expect(() => Decimal.parse('9' * 100000), throwsFormatException);
+        // Just under the cap still parses.
+        expect(Decimal.tryParse('1.${'0' * 4000}e5'), Decimal.fromNum(100000));
+      },
+    );
 
     test('layerMax and layerMin survive a save round trip', () {
       // toString emits `(e^1e+21)16` for layers at or above 1e21, which the
@@ -1014,8 +1020,11 @@ void main() {
       ];
       for (final String source in invalid) {
         expect(Decimal.tryParse(source), isNull, reason: source);
-        expect(() => Decimal.parse(source), throwsFormatException,
-            reason: source);
+        expect(
+          () => Decimal.parse(source),
+          throwsFormatException,
+          reason: source,
+        );
       }
     });
 
