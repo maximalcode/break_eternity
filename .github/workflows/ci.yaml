@@ -55,9 +55,21 @@ jobs:
   # deliberately separate from the matrix above: it only needs one OS and one
   # SDK, and a failure here should be legible as "VM passed, web did not"
   # rather than hiding inside a matrix cell.
+  #
+  # Two OSes, because the divergence is not only VM-vs-web: V8's `Math.pow` is
+  # implementation-defined to the last ulp and genuinely differs between
+  # architectures. `7.dec.sqr()` compiles to a `Math.pow` call that gives
+  # 48.99999999999999 on macOS/arm64 and exactly 49 on Linux/x64. Running the
+  # JS suite on only one of them lets a test pin a value that is true on the
+  # author's laptop and false on the runner -- which is exactly how three tests
+  # reached main in the milestone-2 commit.
   test_js:
-    name: Tests compiled to JavaScript
-    runs-on: ubuntu-latest
+    name: Tests compiled to JavaScript (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
 
     steps:
       - uses: actions/checkout@v4

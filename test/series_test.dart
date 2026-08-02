@@ -1050,14 +1050,23 @@ void main() {
   group('huge currentOwned', () {
     test('owning 1e10 generators makes the next one unaffordable', () {
       // 10 * 1.15^1e10 is around e606978404 — a pocketful of 1e6 buys none.
-      expect(
+      //
+      // The mantissa is compared to a tolerance rather than pinned: `pow`
+      // reaches this magnitude through `math.pow`, which gives
+      // 3.4365095386640756e606978404 on the VM and on macOS/arm64 under
+      // dart2js and 3.436509538664076e606978404 on Linux/x64. The tolerance is
+      // still tight enough to catch a wrong exponent or a wrong third digit,
+      // which is what this test is actually about.
+      expectClose(
         Decimal.sumGeometricSeries(
           Decimal.one,
           Decimal.ten,
           d('1.15'),
           d('1e10'),
-        ).toString(),
-        '3.4365095386640756e606978404',
+        ),
+        d('3.4365095386640756e606978404'),
+        1e-12,
+        reason: 'the cost of the next generator when 1e10 are owned',
       );
       expect(
         Decimal.affordGeometricSeries(
@@ -1398,9 +1407,25 @@ void main() {
       // exponent list above stops at 0.001. At 1e-15 there are only a couple
       // of bits left in `10^x - 1`, so the round trip keeps about one and a
       // half significant figures...
-      expect(d('1e-15').pow10().toString(), '1.0000000000000022');
-      expect(d('1e-15').pow10().log10().toString(), '9.643274665532862e-16');
-      expect(d('1e-15').exp().ln().toString(), '1.1102230246251559e-15');
+      // ...so something still survives the round trip here, unlike one decimal
+      // order down. The digits are deliberately not pinned: `10^1e-15 - 1` is
+      // about ten ulps wide, so a one-ulp difference in `math.pow` between
+      // architectures (see the `sqr` test above) moves the recovered exponent
+      // by 10% or so. The order of magnitude is the portable claim.
+      expect(d('1e-15').pow10(), isNot(Decimal.one));
+      expect(d('1e-15').exp(), isNot(Decimal.one));
+      for (final Decimal recovered in <Decimal>[
+        d('1e-15').pow10().log10(),
+        d('1e-15').exp().ln(),
+      ]) {
+        expect(
+          recovered > d('1e-16') && recovered < d('1e-14'),
+          isTrue,
+          reason:
+              'about one significant figure of 1e-15 survives, got '
+              '$recovered',
+        );
+      }
       // ...and one decimal order further down there are none, so `10^x` is
       // exactly 1 and the exponent is gone for good.
       for (final Decimal x in <Decimal>[d('1e-16'), d('1e-300')]) {
@@ -1430,12 +1455,19 @@ void main() {
       }
     });
 
-    test('sqr is not the same as multiplying by yourself', () {
-      // pow() routes through log10 and pow10, so `x.sqr()` and `x * x` differ
-      // by about one part in 1e15. Worth knowing before someone "optimises"
-      // sqr into a multiplication and moves every fixture by an ulp.
-      expect(d('7').sqr().toString(), '48.99999999999999');
-      expect((d('7') * d('7')).toString(), '49');
+    test('sqr goes through pow rather than through multiplication', () {
+      // `sqr()` is `pow(2)`, which routes through log10 and pow10, so it can
+      // land an ulp away from `x * x`: `7.sqr()` is 48.99999999999999 on the
+      // VM and on macOS/arm64 under dart2js, while `7 * 7` is exactly 49.
+      //
+      // Whether the two agree is platform-dependent — on Linux/x64 under
+      // dart2js `7.sqr()` is exactly 49 — because `math.pow`'s last bit is
+      // implementation-defined. So neither value is pinned here; what is
+      // asserted is the identity that holds by construction, plus closeness.
+      // Worth knowing before someone "optimises" sqr into a multiplication and
+      // moves every fixture by an ulp.
+      expect(d('7').sqr(), d('7').pow(Decimal.two));
+      expectClose(d('7').sqr(), d('49'), 1e-15, reason: 'sqr(7) against 49');
       for (final Decimal x in identityValues) {
         expectClose(x.sqr(), x * x, 1e-13, reason: 'sqr($x) against $x * $x');
       }

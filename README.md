@@ -170,11 +170,20 @@ the layer-0 range (2^-52 to 2^52), where the one-line spellings available in
 `dart:math` are not. Above that range break_eternity.js is inexact itself, and
 this port reproduces its answers rather than improving on them.
 
-Two functions deliberately do *not* do this: `ln` and `exp` call `dart:math`'s
-`log` and `exp` at layer 0, because that is precisely what the reference does
-with `Math.log` and `Math.exp`. They are therefore the host platform's libm, and
-their last bit can differ between the VM and the browser. If you need a
-reproducible logarithm, use `log10` or `log2`.
+Three primitives deliberately do *not* do this, because the reference uses
+their JavaScript equivalents directly: `ln` and `exp` call `dart:math`'s `log`
+and `exp` at layer 0, and `pow` — with `sqr`, `cube`, `root`, `sqrt`, `cbrt`
+and the series helpers that build on it — reaches `math.pow` whenever a result
+lands back at layer 0 with a fractional exponent.
+
+Those are the host platform's, and their last bit is not portable. ECMAScript
+explicitly leaves `Math.pow`'s accuracy implementation-defined, and it really
+does vary: compiled to JavaScript, `7.dec.sqr()` is `48.99999999999999` on
+macOS/arm64 and exactly `49` on Linux/x64. The same is true of the original
+break_eternity.js, so this is faithfulness rather than a regression — but do
+not write a test that pins the last digit of anything that goes through `pow`,
+and do not assume a save file's last ulp survives a move between architectures.
+If you need a reproducible logarithm, use `log10` or `log2`.
 
 Beyond that, this port and break_eternity.js can disagree in the last ulp,
 because two different libm implementations are involved. It almost never

@@ -1091,15 +1091,26 @@ void main() {
         );
       }
 
-      // pow10 only round-trips down to 1e-4. Below that `10^e` is under the
-      // reference's 0.1 floor, so the layer-0 branch is abandoned and the
-      // answer rebuilt one layer up, which costs the subnormal decades their
-      // last digits: `Decimal.fromNum(-320).pow10()` is 1.0000000000002618e-320
-      // rather than 1e-320. That is not a porting error — break_eternity.js
-      // misses exactly the same 258 exponents (the two sets were compared
-      // element by element against the vendored bundle), and all of them are
-      // inside the `pow10` fixture.
-      for (int e = -4; e <= 308; e++) {
+      // pow10 round-trips exactly only down to 1e-1, and that bound is a
+      // property of the code rather than of the host: at or above 0.1 the
+      // lookup table answers directly, so nothing but the software log10 is
+      // involved.
+      //
+      // Below 0.1 the layer-0 result falls under the reference's floor, so
+      // that branch is abandoned and the answer is rebuilt one layer up — a
+      // route through `math.pow`, whose last bit ECMAScript leaves
+      // implementation-defined and which really does vary: `pow10(-4)` is
+      // exactly 1e-4 on the Dart VM and on macOS/arm64 under dart2js, but
+      // 9.999999999999999e-5 on Linux/x64 under dart2js. An earlier version of
+      // this loop started at -4 and passed on one machine and failed in CI on
+      // the other.
+      //
+      // Further down it degrades rather than jumping: `pow10(-320)` is
+      // 1.0000000000002618e-320. That is not a porting error either —
+      // break_eternity.js misses exactly the same 258 exponents (the two sets
+      // were compared element by element against the vendored bundle), and all
+      // of them are inside the `pow10` fixture, which compares to a tolerance.
+      for (int e = -1; e <= 308; e++) {
         expect(
           Decimal.fromNum(e.toDouble()).pow10(),
           Decimal.parse('1e$e'),

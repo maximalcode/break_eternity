@@ -1913,12 +1913,18 @@ double _log2(double x) => log2(x);
 /// that lands at layer 0.
 ///
 /// On the two targets measured (Dart 3.12 VM on macOS arm64, and dart2js on
-/// Node 24) the guard is currently a no-op: `math.pow(10, e).toDouble()` is
-/// the correctly rounded `double` for all 632 integral exponents in
-/// `[-323, 308]` on both, and V8's `Math.pow(10, n)` agrees, so neither branch
-/// can diverge from the reference today. The table stays because `math.pow` is
-/// the host libm on the VM and Wasm and is not specified to be exact, and
-/// because it costs one comparison.
+/// Node 24 on the same machine) the guard is a no-op: `math.pow(10, e)` is the
+/// correctly rounded `double` for all 632 integral exponents in `[-323, 308]`
+/// on both, and V8's `Math.pow(10, n)` agrees.
+///
+/// Do not read that as "the guard is unnecessary". Both measurements are from
+/// one CPU architecture, and `math.pow` is demonstrably not architecture-stable
+/// under dart2js: `Decimal.fromNum(-4).pow10()`, which reaches `math.pow` with
+/// a *fractional* exponent by way of [Decimal._normalize], is exactly 1e-4 on
+/// macOS/arm64 and 9.999999999999999e-5 on Linux/x64. ECMAScript leaves
+/// `Math.pow`'s accuracy implementation-defined and the host libm the VM and
+/// Wasm use is not specified to be exact either, so on an unmeasured host the
+/// integral branch may well diverge too. The table costs one comparison.
 ///
 /// Note that the exponent must be a `double`, not an `int`: `math.pow` with
 /// two `int` arguments does exact *integer* arithmetic, which on the VM wraps

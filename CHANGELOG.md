@@ -25,9 +25,13 @@ Initial release: the core `Decimal` value type.
   library's `log`), so results are identical on the Dart VM, dart2js and Wasm,
   and exact inputs give exact answers: `1e30.dec.log10()` is exactly 30, and
   `log2` is exact on every power of two between 2^-52 and 2^52 (above that the
-  reference is inexact too, and this port matches it). `ln` and `exp` keep
-  calling `dart:math`, because the reference calls `Math.log`/`Math.exp`; they
-  are the two functions whose last bit is platform-dependent.
+  reference is inexact too, and this port matches it). `ln`, `exp` and `pow`
+  keep calling `dart:math`, because the reference calls `Math.log`, `Math.exp`
+  and `Math.pow`; they are the functions whose last bit is platform-dependent.
+  ECMAScript leaves `Math.pow`'s accuracy implementation-defined, and compiled
+  to JavaScript it differs by architecture — `7.dec.sqr()` is
+  `48.99999999999999` on macOS/arm64 and exactly `49` on Linux/x64 — so
+  anything reached through `pow` is portable to a tolerance, not to the bit.
 
 Note on the software `log2`: an earlier draft computed it as
 `log10(x) / log10(2)`, which returns `-10.999999999999998` for 2^-11 where
