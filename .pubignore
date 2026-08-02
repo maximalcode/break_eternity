@@ -20,6 +20,6 @@ tool/
 benchmark/
 .github/
 
-# The whole test tree stays out: fixtures/ alone is ~700 KB of generated data,
-# and shipping the suites without it would leave a test that cannot run.
+# The whole test tree stays out: fixtures/ alone is over 2 MB of generated
+# data, and shipping the suites without it would leave a test that cannot run.
 test/

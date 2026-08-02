@@ -763,26 +763,22 @@ void main() {
   });
 
   group('parse failures', () {
-    const List<String> garbage = <String>[
+    final List<String> garbage = <String>[
       '',
       '   ',
       'abc',
       'e',
       'ee',
       '5 apples',
-      '1,000',
       '--5',
-      '1e1e1',
       'infinity!',
       '(e^6)',
       '(e^)20',
-      '(e^-8)1',
-      '(e^10.5)1',
-      '10^^3',
-      '10^3',
-      '10^^^3',
-      '2 pt 3',
-      '1F3',
+      // The reference reads this as 1e5, because `parseFloat("garbag")` is NaN
+      // and it treats a missing mantissa as "no mantissa" rather than as an
+      // error. Guessing here would corrupt a save file silently.
+      'garbagee5',
+      '9' * 400, // A 400-digit integer; the reference reads this as 0.
     ];
 
     test('tryParse returns null for unsupported input', () {
@@ -1023,9 +1019,6 @@ void main() {
 
     test('invalid layers are still rejected after widening the pattern', () {
       const List<String> invalid = <String>[
-        '(e^-8)1', // negative: needs tetrate
-        '(e^10.5)1', // fractional: needs tetrate
-        '(e^1e400)1', // overflows to infinity
         '(e^)20',
         '(e^1e+21)', // no magnitude
       ];
@@ -1052,6 +1045,83 @@ void main() {
           );
         }
       }
+    });
+  });
+
+  group('modulo conventions', () {
+    // The two differ only in sign, and only when the operands do not share
+    // one — which is exactly when a caller who picked the wrong convention
+    // gets a wrong answer rather than a wrong-looking one.
+    test('truncated and floored agree on positive operands', () {
+      for (final Decimal a in <Decimal>[
+        Decimal.fromNum(5),
+        Decimal.fromNum(0.5),
+        Decimal.fromNum(1e100),
+        Decimal.parse('ee16'),
+      ]) {
+        for (final Decimal b in <Decimal>[
+          Decimal.two,
+          Decimal.fromNum(3),
+          Decimal.fromNum(0.25),
+          Decimal.fromNum(1e50),
+        ]) {
+          expect(a.mod(b), a % b, reason: '$a mod $b');
+          expect(a.mod(b, floored: true), a % b, reason: '$a floored mod $b');
+        }
+      }
+    });
+
+    test('they differ in sign once an operand is negative', () {
+      expect(Decimal.fromNum(-5) % Decimal.two, Decimal.negativeOne);
+      expect(Decimal.fromNum(-5).mod(Decimal.two), Decimal.negativeOne);
+      expect(Decimal.fromNum(-5).mod(Decimal.two, floored: true), Decimal.one);
+
+      expect(Decimal.fromNum(5) % Decimal.fromNum(-2), Decimal.one);
+      expect(
+        Decimal.fromNum(5).mod(Decimal.fromNum(-2), floored: true),
+        Decimal.negativeOne,
+      );
+
+      expect(
+        Decimal.fromNum(-5).mod(Decimal.fromNum(-2), floored: true),
+        Decimal.negativeOne,
+      );
+    });
+
+    test('the truncated result keeps the sign of the dividend', () {
+      // Which is `num.remainder`, not Dart's `%` on `num`.
+      for (final int a in <int>[-7, -5, -1, 1, 5, 7]) {
+        for (final int b in <int>[-3, -2, 2, 3]) {
+          expect(
+            a.dec % b.dec,
+            Decimal.fromNum(a.remainder(b)),
+            reason: '$a % $b',
+          );
+        }
+      }
+    });
+
+    test('the floored result keeps the sign of the divisor', () {
+      for (final int a in <int>[-7, -5, -1, 1, 5, 7]) {
+        for (final int b in <int>[-3, -2, 2, 3]) {
+          final Decimal result = a.dec.mod(b.dec, floored: true);
+          if (result.isZero) {
+            continue;
+          }
+          expect(
+            result.isNegative,
+            b < 0,
+            reason: '$a floored mod $b gave $result',
+          );
+        }
+      }
+    });
+
+    test('zero on either side is zero, in both conventions', () {
+      expect(Decimal.zero.mod(Decimal.two, floored: true), Decimal.zero);
+      expect(Decimal.fromNum(5).mod(Decimal.zero, floored: true), Decimal.zero);
+      expect(Decimal.zero % Decimal.two, Decimal.zero);
+      expect(Decimal.fromNum(5) % Decimal.zero, Decimal.zero);
     });
   });
 

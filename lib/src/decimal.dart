@@ -14,6 +14,7 @@ library;
 import 'dart:math' as math;
 
 import 'constants.dart';
+import 'critical_values.dart';
 
 /// A number of the form `sign * 10^10^10^...(layer times)... mag`.
 ///
@@ -343,25 +344,37 @@ class Decimal implements Comparable<Decimal> {
 
   /// Parses [source], returning `null` instead of throwing on failure.
   ///
-  /// Milestone 1 accepts exactly the grammar [toString] can emit, after
-  /// trimming surrounding whitespace:
+  /// The accepted grammar, after trimming surrounding whitespace, dropping any
+  /// thousands separators and lowercasing:
   ///
-  /// * `NaN`, `Infinity`, `-Infinity` (case-insensitive);
+  /// * `NaN`, `Infinity`, `-Infinity`;
   /// * a plain decimal number, e.g. `-12.5`;
-  /// * scientific notation, e.g. `1.5e-300`;
-  /// * a run of up to five leading `e`s, e.g. `ee15.9`, `-eee1234`;
-  /// * the layer syntax `(e^N)M`, e.g. `(e^7)16.5`, for integral `N >= 0`.
+  /// * scientific notation, e.g. `1.5e-300`, including exponents a `double`
+  ///   cannot hold such as `1e400`;
+  /// * a run of `e`s, e.g. `ee15.9`, `-eee1234`, and the stacked-exponent forms
+  ///   `2e3e4` (which is `2e30000`) and above;
+  /// * the layer syntax `(e^N)M`, e.g. `(e^7)16.5`. A negative or fractional
+  ///   `N` is resolved through [tetrate];
+  /// * `x^y`, `x^^y` and `x^^^y` for powers, tetration and pentation, the last
+  ///   two optionally carrying a payload after a semicolon: `10^^3;5` is
+  ///   `10.dec.tetrate(3, payload: 5.dec)`;
+  /// * the tetration shorthands `XpY` and `X PT Y` — `3pt5` is a tower of
+  ///   three tens with 5 on top — and `XFY`, which puts the payload first, so
+  ///   `5f3` is the same number. Parentheses around either part are ignored.
   ///
-  /// Anything else — `x^y`, `x^^y`, `x^^^y`, `XPY`, `XFY`, thousands
-  /// separators, a fractional or negative layer in `(e^N)M` — returns `null`
-  /// rather than a wrong number. TODO(m3): support the full grammar, which
-  /// needs `pow`, `tetrate` and `pentate`.
+  /// Two deliberate divergences from break_eternity.js, both in the same
+  /// direction — refusing rather than guessing:
   ///
-  /// Note that JavaScript's `parseFloat` is lenient where Dart's
-  /// `double.parse` is strict: `parseFloat('5 apples')` is `5`, while this
-  /// returns `null`. Silently mis-parsing is the worse failure mode.
+  /// * JavaScript's `parseFloat` stops at the first character it cannot use, so
+  ///   the reference reads `5 apples` as `5` and, less obviously, `garbagee5`
+  ///   as `1e5`. This returns `null` for both.
+  /// * The reference strips only the *first* thousands separator, so it reads
+  ///   `1,000,000` as `1000`. This strips all of them and reads `1000000`.
+  ///
+  /// Both cases are silent data corruption in a save file, which is worse than
+  /// a [FormatException] from [parse].
   static Decimal? tryParse(String source) {
-    final String value = source.trim();
+    String value = source.trim();
     // The length cap keeps a hostile save from exhausting the regex engine's
     // stack: a few megabytes of digits raises StackOverflowError, which is an
     // Error rather than an Exception and so escapes the `null on failure`
@@ -372,6 +385,13 @@ class Decimal implements Comparable<Decimal> {
     // parse a multi-megabyte literal.
     if (value.isEmpty || value.length > _maxParseLength) {
       return null;
+    }
+
+    // Thousands separators are noise, never meaning. Reference: `IGNORE_COMMAS`
+    // — which uses `String.replace` with a string pattern and so only ever
+    // drops the first one.
+    if (value.contains(',')) {
+      value = value.replaceAll(',', '');
     }
 
     final String lower = value.toLowerCase();
@@ -393,25 +413,39 @@ class Decimal implements Comparable<Decimal> {
         return null;
       }
       // The pattern is deliberately permissive about `N` so that toString's
-      // own output always parses; the value checks live here. A fractional or
-      // negative layer needs `tetrate`, which milestone 1 does not have, and an
-      // overflowing one is not a layer at all.
+      // own output always parses; the value checks live here.
       final double? towerLayer = double.tryParse(tower.group(2)!);
-      if (towerLayer == null ||
-          !towerLayer.isFinite ||
-          towerLayer < 0 ||
-          towerLayer != towerLayer.floorToDouble()) {
+      if (towerLayer == null) {
         return null;
       }
-      return _normalize(tower.group(1) == '-' ? -1 : 1, towerLayer, towerMag);
+      final double towerSign = tower.group(1) == '-' ? -1 : 1;
+      // A negative, fractional or overflowing layer is not a layer at all, so
+      // the reference hands those to `tetrate`. Note that it takes the sign
+      // from the tetration result, discarding the leading minus.
+      if (towerLayer < 0 || towerLayer.remainder(1) != 0) {
+        return ten.tetrate(towerLayer, payload: Decimal.fromNum(towerMag));
+      }
+      return _normalize(towerSign, towerLayer, towerMag);
     }
 
-    // Anything else containing a caret is pow/tetrate/pentate syntax.
+    // The hyper-operator forms and the tetration shorthands. Both fall through
+    // to the exponent handling below when their parts are not numbers, exactly
+    // as the reference does.
     if (lower.contains('^')) {
-      return null; // TODO(m3): x^y, x^^y and x^^^y.
+      final Decimal? hyper = _parseHyperOperator(lower);
+      if (hyper != null) {
+        return hyper;
+      }
+    }
+    if (lower.contains('p') || lower.contains('f')) {
+      final Decimal? shorthand = _parseTetrationShorthand(lower);
+      if (shorthand != null) {
+        return shorthand;
+      }
     }
 
-    final int ecount = 'e'.allMatches(lower).length;
+    final List<String> parts = lower.split('e');
+    final int ecount = parts.length - 1;
 
     // Numbers that are exactly doubles (zero or one `e`). The reference
     // refuses the one-`e` shortcut below 1e-307, where doubles start losing
@@ -424,63 +458,183 @@ class Decimal implements Comparable<Decimal> {
         return Decimal.fromNum(asDouble);
       }
     }
+    if (ecount < 1) {
+      // No `e` and not a double: the reference reads this as 0, which is how
+      // `garbage` and a 400-digit integer both become zero over there.
+      return null;
+    }
 
-    // A run of leading `e`s: `eee15.9` is 10^10^10^15.9. Reference: the
-    // `!isFinite(mantissa)` branch of `fromString`.
-    final RegExpMatch? repeated = _repeatedEPattern.firstMatch(lower);
-    if (repeated != null) {
-      final double? repeatedMag = double.tryParse(repeated.group(3)!);
-      if (repeatedMag == null) {
+    // Everything else is a mantissa, a run of `e`s and an exponent. Reference:
+    // the tail of `fromString`, from `const mantissa = parseFloat(parts[0])`.
+    final double? mantissa = _parseNumberPart(parts[0]);
+    if (mantissa == null) {
+      return null;
+    }
+    if (mantissa == 0) {
+      return zero;
+    }
+    // The exponent, unlike the mantissa, has to be a real number: `ee15` is a
+    // tower with no mantissa, but a bare `e` is not a number at all. The
+    // reference reads both as NaN.
+    final double? last = double.tryParse(parts[parts.length - 1]);
+    if (last == null) {
+      return null;
+    }
+    double exponent = last;
+    if (ecount >= 2) {
+      // `AeBeC` is `A * 10^(B * 10^C)`, so the second-to-last part folds into
+      // the exponent as its own magnitude. JS: `f_maglog10`.
+      final double? me = _parseNumberPart(parts[parts.length - 2]);
+      if (me == null) {
         return null;
       }
-      return _normalize(
-        repeated.group(1) == '-' ? -1 : 1,
-        repeated.group(2)!.length.toDouble(),
-        repeatedMag,
-      );
-    }
-
-    // `MeX` where the double parse above declined, i.e. very small or very
-    // large exponents. Reference: the `ecount === 1` branch of `fromString`.
-    if (ecount == 1) {
-      final RegExpMatch? scientific = _scientificPattern.firstMatch(lower);
-      if (scientific != null) {
-        final double mantissa = double.parse(scientific.group(1)!);
-        if (mantissa == 0) {
-          return zero;
-        }
-        final double exponent = double.parse(scientific.group(2)!);
-        // 2e10 is 10^log10(2e10), which is 10^(10 + log10(2)).
-        return _normalize(mantissa.sign, 1, exponent + _log10(mantissa.abs()));
+      if (me.isFinite) {
+        exponent *= me.sign;
+        exponent += me.sign * _log10(me.abs());
       }
     }
 
-    // TODO(m3): `AeBeC`, `XPY`, `X PT Y`, `XFY` and comma separators.
+    if (!mantissa.isFinite) {
+      // No mantissa at all: `eee15.9` is a bare tower of `e`s.
+      return _normalize(parts[0] == '-' ? -1 : 1, ecount.toDouble(), exponent);
+    }
+    if (ecount == 1) {
+      // 2e10 is 10^log10(2e10), which is 10^(10 + log10(2)).
+      return _normalize(mantissa.sign, 1, exponent + _log10(mantissa.abs()));
+    }
+    if (ecount == 2) {
+      return Decimal.fromComponents(1, 2, exponent) * Decimal.fromNum(mantissa);
+    }
+    // At `eee` and above the mantissa is too small to be recognisable.
+    return _normalize(mantissa.sign, ecount.toDouble(), exponent);
+  }
+
+  /// `x^y`, `x^^y` and `x^^^y`, the last two with an optional `;payload`.
+  ///
+  /// Returns null when the parts are not both finite numbers, which lets
+  /// [tryParse] carry on to the other forms — the reference falls through the
+  /// same way, by testing `isFinite` on its `parseFloat` results.
+  static Decimal? _parseHyperOperator(String lower) {
+    for (final (String operator, bool pentation) in const [
+      ('^^^', true),
+      ('^^', false),
+    ]) {
+      final List<String> parts = lower.split(operator);
+      if (parts.length != 2) {
+        continue;
+      }
+      final double? base = double.tryParse(parts[0]);
+      if (base == null || !base.isFinite) {
+        continue;
+      }
+      // `10^^3;5` is a tower of three tens with 5 at the top.
+      final List<String> heightParts = parts[1].split(';');
+      if (heightParts.length > 2) {
+        continue;
+      }
+      final double? height = double.tryParse(heightParts[0]);
+      if (height == null || !height.isFinite) {
+        continue;
+      }
+      double payload = 1;
+      if (heightParts.length == 2) {
+        final double? given = double.tryParse(heightParts[1]);
+        if (given != null && given.isFinite) {
+          payload = given;
+        }
+      }
+      final Decimal b = Decimal.fromNum(base);
+      final Decimal p = Decimal.fromNum(payload);
+      return pentation
+          ? b.pentate(height, payload: p)
+          : b.tetrate(height, payload: p);
+    }
+
+    final List<String> parts = lower.split('^');
+    if (parts.length != 2) {
+      return null;
+    }
+    final double? base = double.tryParse(parts[0]);
+    final double? exponent = double.tryParse(parts[1]);
+    if (base == null ||
+        exponent == null ||
+        !base.isFinite ||
+        !exponent.isFinite) {
+      return null;
+    }
+    return Decimal.fromNum(base).pow(Decimal.fromNum(exponent));
+  }
+
+  /// The three base-10 tetration shorthands: `X PT Y`, `XpY` and `XFY`.
+  ///
+  /// All three mean `10.tetrate(height, payload: payload)`; `F` is the one that
+  /// writes the payload first. A leading minus negates the whole result rather
+  /// than either part.
+  static Decimal? _parseTetrationShorthand(String lower) {
+    for (final String separator in const ['pt', 'p', 'f']) {
+      final List<String> parts = lower.split(separator);
+      if (parts.length != 2) {
+        continue;
+      }
+
+      String head = parts[0];
+      final bool negative = head.startsWith('-');
+      if (negative) {
+        head = head.substring(1);
+      }
+
+      final double? height;
+      final double? given;
+      if (separator == 'f') {
+        given = double.tryParse(_stripParentheses(head));
+        height = double.tryParse(_stripParentheses(parts[1]));
+      } else {
+        height = double.tryParse(head);
+        given = double.tryParse(_stripParentheses(parts[1]));
+      }
+      if (height == null || !height.isFinite) {
+        continue;
+      }
+      final double payload = (given == null || !given.isFinite) ? 1 : given;
+
+      final Decimal result = ten.tetrate(
+        height,
+        payload: Decimal.fromNum(payload),
+      );
+      return negative ? -result : result;
+    }
     return null;
+  }
+
+  /// Drops one `(` and one `)`, matching the reference's single-replacement
+  /// `String.replace` calls on the `PT` / `P` / `F` operands.
+  static String _stripParentheses(String value) =>
+      value.replaceFirst('(', '').replaceFirst(')', '');
+
+  /// One `e`-delimited piece of a number, as `parseFloat` would read it.
+  ///
+  /// Returns NaN — the reference's `parseFloat` result — for the pieces that
+  /// carry no mantissa, which is how `ee15` and `-ee15` are told apart. Returns
+  /// null for anything else Dart refuses, so that genuine garbage is rejected
+  /// instead of being read as a number.
+  static double? _parseNumberPart(String value) {
+    if (value.isEmpty || value == '-' || value == '+') {
+      return double.nan;
+    }
+    return double.tryParse(value);
   }
 
   /// The longest input [tryParse] will look at. See the guard in [tryParse].
   static const int _maxParseLength = 4096;
 
-  /// `(e^N)M`, optionally signed. `N` accepts scientific notation as well as a
-  /// plain digit run, because [toString] emits `(e^1e+21)16` for layers at or
-  /// above 1e21 — including [layerMax] and [layerMin] — and a serialiser whose
-  /// output its own parser rejects corrupts saves. Non-integral, negative and
-  /// overflowing layers are matched here but rejected in [tryParse]: the
-  /// reference falls back to `tetrate` for `(e^-8)1` and `(e^10.5)1`, which
-  /// milestone 1 does not have.
+  /// `(e^N)M`, optionally signed. `N` accepts a sign and scientific notation as
+  /// well as a plain digit run, because [toString] emits `(e^1e+21)16` for
+  /// layers at or above 1e21 — including [layerMax] and [layerMin] — and a
+  /// serialiser whose output its own parser rejects corrupts saves. Negative
+  /// and non-integral layers are matched here and routed through [tetrate] in
+  /// [tryParse], as the reference does for `(e^-8)1` and `(e^10.5)1`.
   static final RegExp _layerPattern = RegExp(
-    r'^([+-]?)\(e\^(\d+(?:\.\d+)?(?:e[+-]?\d+)?)\)(.+)$',
-  );
-
-  /// A signed run of `e`s followed by a plain decimal magnitude, e.g. `-ee-16`.
-  static final RegExp _repeatedEPattern = RegExp(
-    r'^([+-]?)(e+)(-?\d+(?:\.\d+)?)$',
-  );
-
-  /// `MeX`, both parts plain decimals.
-  static final RegExp _scientificPattern = RegExp(
-    r'^([+-]?\d+(?:\.\d+)?)e([+-]?\d+(?:\.\d+)?)$',
+    r'^([+-]?)\(e\^([+-]?\d+(?:\.\d+)?(?:e[+-]?\d+)?)\)(.+)$',
   );
 
   // ---------------------------------------------------------------------------
@@ -1014,8 +1168,8 @@ class Decimal implements Comparable<Decimal> {
   /// This is truncated-division modulo, the same convention as
   /// `num.remainder` and JavaScript's `%` — *not* Dart's `%` on `num`, which
   /// is always non-negative. So `(-5).dec % 2.dec` is `-1`, matching
-  /// `(-5).remainder(2)`. Reference: `mod()` with `floored: false`;
-  /// TODO(m3): expose the floored variant.
+  /// `(-5).remainder(2)`. See [mod] for the floored convention, where it would
+  /// be `1`. Reference: `mod()` with `floored: false`.
   Decimal operator %(Decimal other) {
     final Decimal magnitude = other.abs();
 
@@ -1046,6 +1200,40 @@ class Decimal implements Comparable<Decimal> {
       return -(abs() % magnitude);
     }
     return this - (this / magnitude).floor() * magnitude;
+  }
+
+  /// The remainder of `this / other`, in either modulo convention.
+  ///
+  /// With [floored] false — the default, and what [operator %] does — the
+  /// result takes the sign of `this`, as `num.remainder` and JavaScript's `%`
+  /// do. With [floored] true it takes the sign of [other] instead, which is the
+  /// convention number theory uses and the one Dart's own `%` on `num` follows
+  /// for a positive divisor.
+  ///
+  /// The two agree whenever both operands are positive, and differ otherwise:
+  ///
+  /// ```dart
+  /// print((-5).dec.mod(2.dec));                 // -1
+  /// print((-5).dec.mod(2.dec, floored: true));  //  1
+  /// print(5.dec.mod((-2).dec));                 //  1
+  /// print(5.dec.mod((-2).dec, floored: true));  // -1
+  /// ```
+  ///
+  /// Reference: `mod(value, floored)`, which it also exposes as `modulo` and
+  /// `modular`; this port keeps one name for one function.
+  Decimal mod(Decimal other, {bool floored = false}) {
+    if (!floored) {
+      return this % other;
+    }
+    final Decimal magnitude = other.abs();
+    if (this == zero || magnitude == zero) {
+      return zero;
+    }
+    Decimal absmod = abs() % magnitude;
+    if ((sign == -1) != (other.sign == -1)) {
+      absmod = magnitude - absmod;
+    }
+    return absmod * Decimal.fromNum(other.sign);
   }
 
   // ---------------------------------------------------------------------------
@@ -1515,7 +1703,7 @@ class Decimal implements Comparable<Decimal> {
   ///
   /// Reference: `root(value)`.
   Decimal root(Decimal degree) {
-    if (this < zero && degree._flooredModTwo() == one) {
+    if (this < zero && degree.mod(two, floored: true) == one) {
       return -(-this).root(degree);
     }
     return pow(degree.reciprocal());
@@ -1605,20 +1793,967 @@ class Decimal implements Comparable<Decimal> {
   /// One third, for [cbrt]: the `double` nearest 1/3, as the reference's `1/3`.
   static final Decimal _oneThird = Decimal.fromNum(1 / 3);
 
-  /// The reference's `mod(value, floored: true)` for a divisor of 2.
+  // ---------------------------------------------------------------------------
+  // Tetration and its inverses
+  // ---------------------------------------------------------------------------
+  //
+  // Tetration is iterated exponentiation: `x^^n` is `x^x^x^...^x` with n copies
+  // of x, right-associated. It is the operation the `sign`/`layer`/`mag`
+  // representation is built around — `10^^n` is exactly "layer n" — so these
+  // methods are where the type finally reaches the magnitudes it was designed
+  // for.
+  //
+  // Non-integer heights are the hard part: there is no single agreed-upon
+  // definition of `x^^2.5`. Every method here takes a `linear` flag with the
+  // reference's meaning. False (the default) uses the analytic approximation
+  // from the lookup tables in `critical_values.dart` for bases up to 10, and
+  // the linear approximation above that; true forces the linear approximation
+  // everywhere. Whole heights are unaffected either way.
+
+  /// The convergence limit `e^(1/e)`, as a `Decimal`.
+  static final Decimal _convergenceLimit = Decimal.fromNum(
+    tetrationConvergenceLimit,
+  );
+
+  /// `-1/e`, below which the Lambert W function leaves the reals.
   ///
-  /// [root] needs to know whether its degree is an odd integer, and the
-  /// reference asks that question with the *floored* modulo — the one that
-  /// agrees with number theory, where `-3 mod 2` is 1 rather than -1. The
-  /// public [operator %] is the truncated modulo (JavaScript's `%`), so this
-  /// private helper covers the one case milestone 2 needs.
-  /// TODO(m3): expose the floored modulo properly.
-  Decimal _flooredModTwo() {
-    if (isZero) {
+  /// The reference writes this as `-0.3678794411710499`, which is a hair above
+  /// the true `-1/e`; the literal is kept as-is so the boundary lands in the
+  /// same place.
+  static final Decimal _lambertBranchPoint = Decimal.fromNum(
+    -0.3678794411710499,
+  );
+
+  /// Below this, `lambertW(z)` is `z` to within a rounding error.
+  static final Decimal _lambertLinearFloor = Decimal.fromNum(1e-300);
+
+  /// `eee15`, the size above which `d_lambertw` stops converging reliably.
+  ///
+  /// Normalises to `(1, 2, 1e15)`; the reference spells it as the string
+  /// `"eee15"`.
+  static final Decimal _eee15 = Decimal.fromComponents(1, 3, 15);
+
+  /// The number -2, for [pentaLog]'s lower bound.
+  static const Decimal _negativeTwo = Decimal._(-1, 0, 2);
+
+  /// The reference's `lte`, for the places where its NaN behaviour matters.
+  ///
+  /// break_eternity.js defines `lte` as `!gt` and `gte` as `!lt`, so a NaN
+  /// operand comes out as *both* "less than or equal to" and "greater than or
+  /// equal to" everything. [operator <=] deliberately follows `double` instead —
+  /// every comparison against NaN is false — because that is what a Dart caller
+  /// expects and what the rest of the language does.
+  ///
+  /// The tetration family is where that difference changes an answer rather
+  /// than just a predicate: `Decimal.nan.slog()` reaches `copy <= one` and has
+  /// to come out NaN rather than run the loop a hundred times. So those
+  /// comparisons, and only those, are spelled the reference's way here.
+  bool _lteNaNTrue(Decimal other) => !(this > other);
+
+  /// The reference's `gte`, which is `!lt`. See [_lteNaNTrue].
+  bool _gteNaNTrue(Decimal other) => !(this < other);
+
+  /// Tetration: this value raised to itself [height] times.
+  ///
+  /// `x.tetrate(n)` is `x^x^x^...^x` with `n` copies of `x`, evaluated from the
+  /// top down. [payload] is what sits at the very top of the tower instead of
+  /// the implicit 1, so `x.tetrate(n, payload: p)` is the result of applying
+  /// `x^_` to `p` exactly `n` times.
+  ///
+  /// ```dart
+  /// print(10.dec.tetrate(3));   // 1e10000000000
+  /// print(2.dec.tetrate(4));    // 65536
+  /// print(10.dec.tetrate(1e10)); // (e^10000000000)1
+  /// ```
+  ///
+  /// A negative [height] is [iteratedLog] — undoing the tower — and an infinite
+  /// one is the limit of the infinite power tower, which converges only for
+  /// bases in `[e^-e, e^(1/e)]` and is [infinity] above that.
+  ///
+  /// This is not constant-time the way arithmetic is: it climbs the tower one
+  /// exponentiation at a time, with a shortcut once each step is only adding a
+  /// layer, and gives up after 10,000 iterations. Heights beyond a few thousand
+  /// are cheap only because of that shortcut.
+  ///
+  /// Reference: `tetrate(height, payload, linear)`.
+  Decimal tetrate(num height, {Decimal payload = one, bool linear = false}) {
+    final double h = height.toDouble();
+
+    // x^^1 == x^payload, and x^^0 == payload.
+    if (h == 1) {
+      return pow(payload);
+    }
+    if (h == 0) {
+      return payload;
+    }
+    // 1^^x == 1, and (-1)^^x == (-1)^payload.
+    if (this == one) {
+      return one;
+    }
+    if (this == negativeOne) {
+      return pow(payload);
+    }
+
+    if (h == double.infinity) {
+      final double thisNum = toDouble();
+      if (thisNum <= tetrationConvergenceLimit &&
+          thisNum >= tetrationConvergenceFloor) {
+        // Inside the convergence range. For bases above 1, `b^x == x` has two
+        // solutions: the lower one is a stable equilibrium, the upper one is
+        // not. Below 1 only the stable solution exists.
+        final Decimal negln = -ln();
+        Decimal lower = negln.lambertW() / negln;
+        if (thisNum < 1) {
+          return lower;
+        }
+        Decimal upper = negln.lambertW(principal: false) / negln;
+        if (thisNum > tetrationConvergenceHotfix) {
+          // Hotfix from the reference for the very edge of the range, where
+          // the two solutions stop being distinguishable.
+          upper = Decimal.fromNum(math.e);
+          lower = upper;
+        }
+        if (payload == upper) {
+          return upper;
+        } else if (payload < upper) {
+          return lower;
+        }
+        return infinity;
+      } else if (thisNum > tetrationConvergenceLimit) {
+        return infinity;
+      }
+      // Below e^-e the tower never converges, and a negative base goes complex
+      // almost immediately.
+      return nan;
+    }
+
+    // 0^^x oscillates — 0^^1 is 0, 0^^2 is 1, 0^^3 is 0 — because 0^0 is 1
+    // here as it is in JavaScript. The payload is ignored, and non-integer
+    // heights get a linear approximation.
+    if (this == zero) {
+      double result = (h + 1).remainder(2).abs();
+      if (result > 1) {
+        result = 2 - result;
+      }
+      return Decimal.fromNum(result);
+    }
+
+    if (h < 0) {
+      return payload.iteratedLog(base: this, times: -h, linear: linear);
+    }
+
+    final double whole = h.truncateToDouble();
+    final double fracheight = h - whole;
+    Decimal p = payload;
+
+    // Bases in (0, 1] — and bases up to e^(1/e) with a small enough payload —
+    // flip-flop between two values and converge slowly, or never. Iterate up to
+    // a bounded height and stop as soon as it settles.
+    if (this > zero &&
+        (this < one ||
+            (_lteNaNTrue(_convergenceLimit) &&
+                p._lteNaNTrue((-ln()).lambertW(principal: false) / (-ln())))) &&
+        (h > 10000 || !linear)) {
+      final double limitheight = math.min(10000.0, whole);
+      if (p == one) {
+        p = pow(Decimal.fromNum(fracheight));
+      } else if (this < one) {
+        p =
+            p.pow(Decimal.fromNum(1 - fracheight)) *
+            pow(p).pow(Decimal.fromNum(fracheight));
+      } else {
+        // The reference does not forward `linear` here; neither do we.
+        p = p.layerAdd(fracheight, this);
+      }
+      for (double i = 0; i < limitheight; i++) {
+        final Decimal old = p;
+        p = pow(p);
+        if (old == p) {
+          return p;
+        }
+      }
+      if (h > 10000 && h.ceilToDouble().remainder(2) == 1) {
+        return pow(p);
+      }
+      return p;
+    }
+
+    if (fracheight != 0) {
+      if (p == one) {
+        if (this > ten || linear) {
+          // Above base 10 the reference reverts to the linear approximation.
+          p = pow(Decimal.fromNum(fracheight));
+        } else {
+          p = Decimal.fromNum(
+            criticalSection(toDouble(), fracheight, criticalTetrValues),
+          );
+          // The critical-section grid starts at base 2, so smaller bases are
+          // scaled onto it rather than read off it.
+          if (this < two) {
+            p = (p - one) * (this - one) + one;
+          }
+        }
+      } else {
+        if (this == ten) {
+          p = p.layerAdd10(fracheight, linear: linear);
+        } else if (this < one) {
+          p =
+              p.pow(Decimal.fromNum(1 - fracheight)) *
+              pow(p).pow(Decimal.fromNum(fracheight));
+        } else {
+          p = p.layerAdd(fracheight, this, linear: linear);
+        }
+      }
+    }
+
+    for (double i = 0; i < whole; i++) {
+      p = pow(p);
+      if (!p.layer.isFinite || !p.mag.isFinite) {
+        return _normalize(p.sign, p.layer, p.mag);
+      }
+      // Once each step only adds a layer, the remaining steps can be applied
+      // all at once. This is what makes a height of 1e10 finish.
+      if (p.layer - layer > 3) {
+        return Decimal._(p.sign, p.layer + (whole - i - 1), p.mag);
+      }
+      // Give up after 10,000 iterations if nothing is happening.
+      if (i > 10000) {
+        return p;
+      }
+    }
+    return p;
+  }
+
+  /// Iterated exponentiation: `this^_` applied to [payload] [height] times.
+  ///
+  /// Identical to [tetrate] — the two names describe the same operation from
+  /// different directions, and the reference exposes both. Reference:
+  /// `iteratedexp(height, payload, linear)`.
+  Decimal iteratedExp(
+    num height, {
+    Decimal payload = one,
+    bool linear = false,
+  }) => tetrate(height, payload: payload, linear: linear);
+
+  /// Repeated logarithm: `log(base)` applied to this value [times] times.
+  ///
+  /// The inverse of [iteratedExp], and equivalently `base.tetrate(-times,
+  /// payload: this)`. Approximately subtracts [times] from this value's [slog]
+  /// representation.
+  ///
+  /// ```dart
+  /// print(Decimal.parse('1e10000000000').iteratedLog(times: 2)); // 10
+  /// ```
+  ///
+  /// Reference: `iteratedlog(base, times, linear)`.
+  Decimal iteratedLog({
+    Decimal base = ten,
+    num times = 1,
+    bool linear = false,
+  }) {
+    final double t = times.toDouble();
+    if (t < 0) {
+      return base.tetrate(-t, payload: this, linear: linear);
+    }
+
+    Decimal result = this;
+    double whole = t.truncateToDouble();
+    final double fraction = t - whole;
+
+    // Symmetric with tetrate's shortcut: while each step only removes a layer,
+    // remove them all at once.
+    if (result.layer - base.layer > 3) {
+      final double layerloss = math.min(whole, result.layer - base.layer - 3);
+      whole -= layerloss;
+      result = Decimal._(result.sign, result.layer - layerloss, result.mag);
+    }
+
+    for (double i = 0; i < whole; i++) {
+      result = result.log(base);
+      if (!result.layer.isFinite || !result.mag.isFinite) {
+        return _normalize(result.sign, result.layer, result.mag);
+      }
+      if (i > 10000) {
+        return result;
+      }
+    }
+
+    if (fraction > 0 && fraction < 1) {
+      if (base == ten) {
+        result = result.layerAdd10(-fraction, linear: linear);
+      } else {
+        result = result.layerAdd(-fraction, base, linear: linear);
+      }
+    }
+
+    return result;
+  }
+
+  /// Super-logarithm: how tall a tower of [base] has to be to reach this value.
+  ///
+  /// One of tetration's two inverses, and the one that answers "how big is this
+  /// number, really" for numbers too large for [log10] to say anything useful
+  /// about. It grows so slowly that it never exceeds about 1.8e308 — a tower
+  /// that tall is already the largest representable `Decimal`.
+  ///
+  /// ```dart
+  /// print(Decimal.parse('1e10000000000').slog()); // 3
+  /// print(Decimal.parse('(e^1000)1').slog());     // 1000
+  /// ```
+  ///
+  /// The answer is found by binary search against [tetrate], starting from a
+  /// cheap estimate and refining for [iterations] steps. That makes it markedly
+  /// more expensive than [log10]; cache it rather than calling it every frame.
+  ///
+  /// Reference: `slog(base, iterations, linear)`.
+  Decimal slog({
+    Decimal base = ten,
+    int iterations = 100,
+    bool linear = false,
+  }) {
+    double stepSize = 0.001;
+    bool hasChangedDirectionsOnce = false;
+    bool previouslyRose = false;
+    double result = _slogInternal(base, linear).toDouble();
+
+    for (int i = 1; i < iterations; i++) {
+      final Decimal candidate = base.tetrate(result, linear: linear);
+      final bool currentlyRose = candidate > this;
+      if (i > 1 && previouslyRose != currentlyRose) {
+        hasChangedDirectionsOnce = true;
+      }
+      previouslyRose = currentlyRose;
+      // Grow the step until the target is bracketed, then halve it.
+      if (hasChangedDirectionsOnce) {
+        stepSize /= 2;
+      } else {
+        stepSize *= 2;
+      }
+      stepSize = stepSize.abs() * (currentlyRose ? -1 : 1);
+      result += stepSize;
+      if (stepSize == 0) {
+        break;
+      }
+    }
+    return Decimal.fromNum(result);
+  }
+
+  /// The initial estimate [slog] refines: peel logarithms until the value lands
+  /// in the critical section, then read the fractional part off the table.
+  ///
+  /// Reference: `slog_internal(base, linear)`.
+  Decimal _slogInternal(Decimal base, bool linear) {
+    // A base of 1 or less has no usable super-logarithm.
+    if (base._lteNaNTrue(zero) || base == one) {
+      return nan;
+    }
+    if (base < one) {
+      // These small, wobbling bases only have answers at two points:
+      // 0 < this < 1 is ambiguous (it happens repeatedly), this < 0 appears to
+      // be impossible, and this > 1 is partially complex.
+      if (this == one) {
+        return zero;
+      }
+      if (this == zero) {
+        return negativeOne;
+      }
+      return nan;
+    }
+    // slog_n(0) is -1.
+    if (mag < 0 || this == zero) {
+      return negativeOne;
+    }
+    if (base < _convergenceLimit) {
+      // The infinite tower converges here, so anything above its limit is not
+      // reachable at any height.
+      final Decimal negln = -base.ln();
+      final Decimal infTower = negln.lambertW() / negln;
+      if (this == infTower) {
+        return infinity;
+      }
+      if (this > infTower) {
+        return nan;
+      }
+    }
+
+    // An infinite tower has an infinite super-logarithm, and a negatively
+    // infinite one has none. The reference reaches both the long way round: the
+    // layer shortcut below computes `Infinity - Infinity` for the new layer, and
+    // it then carries that invalid triple through the loop, where its `lte`
+    // (which is `!gt`, so NaN satisfies it) decides the outcome. Dart's
+    // comparisons treat a NaN layer as NaN throughout, so the answers are
+    // stated. A base whose own layer is infinite is left alone: there the
+    // subtraction never produces the invalid triple in the first place, and both
+    // languages fall out of the loop with NaN.
+    if (!layer.isFinite && base.layer.isFinite) {
+      return sign > 0 ? infinity : nan;
+    }
+
+    double result = 0;
+    Decimal copy = this;
+    if (copy.layer - base.layer > 3) {
+      final double layerloss = copy.layer - base.layer - 3;
+      result += layerloss;
+      copy = Decimal._(copy.sign, copy.layer - layerloss, copy.mag);
+    }
+
+    for (int i = 0; i < 100; i++) {
+      if (copy < zero) {
+        copy = base.pow(copy);
+        result -= 1;
+      } else if (copy._lteNaNTrue(one)) {
+        if (linear) {
+          return Decimal.fromNum(result + copy.toDouble() - 1);
+        }
+        return Decimal.fromNum(
+          result + _slogCritical(base.toDouble(), copy.toDouble()),
+        );
+      } else {
+        result += 1;
+        copy = copy.log(base);
+      }
+    }
+    return Decimal.fromNum(result);
+  }
+
+  /// The fractional part of [slog] inside the critical section `[0, 1]`.
+  ///
+  /// Reference: `slog_critical(base, height)`.
+  static double _slogCritical(double base, double height) {
+    // Above base 10 the reference reverts to the old linear approximation.
+    if (base > 10) {
+      return height - 1;
+    }
+    return criticalSection(base, height, criticalSlogValues);
+  }
+
+  /// Adds [diff] to this value's [layer], fractional layers included.
+  ///
+  /// Whole values of [diff] are exactly "wrap in another 10^", which costs
+  /// nothing: `x.layerAdd10(1)` is `10^x`. Fractional values are the
+  /// interesting case — `x.layerAdd10(0.5)` lands halfway between `x` and
+  /// `10^x` in the sense that applying it twice gives `10^x`.
+  ///
+  /// ```dart
+  /// print(100.dec.layerAdd10(1)); // 1e100
+  /// print(1e100.dec.layerAdd10(-1)); // 100
+  /// ```
+  ///
+  /// Equivalent to adding [diff] to the value's `slog(10)`. Reference:
+  /// `layeradd10(diff, linear)`.
+  Decimal layerAdd10(num diff, {bool linear = false}) {
+    double d = diff.toDouble();
+    double s = sign;
+    double l = layer;
+    double m = mag;
+
+    if (d >= 1) {
+      if (m < 0 && l > 0) {
+        // A very small number (mag < 0, layer > 0) has to become 0 first.
+        s = 0;
+        m = 0;
+        l = 0;
+      } else if (s == -1 && l == 0) {
+        // For values like (-3).layerAdd10(1) the sign moves into the mag.
+        s = 1;
+        m = -m;
+      }
+      final double add = d.truncateToDouble();
+      d -= add;
+      l += add;
+    }
+    if (d <= -1) {
+      final double add = d.truncateToDouble();
+      d -= add;
+      l += add;
+      if (l < 0) {
+        for (int i = 0; i < 100; i++) {
+          l += 1;
+          m = _log10(m);
+          if (!m.isFinite) {
+            // Hitting a -Infinity mag means negative infinity, not zero:
+            // `Decimal.zero.layerAdd10(-1)` arrives here.
+            if (s == 0) {
+              s = 1;
+            }
+            if (l < 0) {
+              l = 0;
+            }
+            return _normalize(s, l, m);
+          }
+          if (l >= 0) {
+            break;
+          }
+        }
+      }
+    }
+
+    // Unreachable in practice, and deliberately kept anyway: the loop above
+    // either lands on a non-negative layer or bails out on a non-finite mag
+    // (repeated log10 reaches NaN within about five steps from any starting
+    // point), so this is the reference's belt-and-braces, not a second path.
+    while (l < 0) {
+      l += 1;
+      m = _log10(m);
+    }
+    if (s == 0) {
+      // Having started from zero, a layer has to be put back by hand.
+      s = 1;
+      if (m == 0 && l >= 1) {
+        l -= 1;
+        m = 1;
+      }
+    }
+    final Decimal result = _normalize(s, l, m);
+
+    if (d != 0) {
+      // Only ever a positive height with payload 1, so this cannot recurse.
+      return result.layerAdd(d, ten, linear: linear);
+    }
+    return result;
+  }
+
+  /// Adds [diff] to this value's `slog(base)` representation.
+  ///
+  /// The [base]-general form of [layerAdd10]: closely related to tetrating to
+  /// height [diff] and to taking [diff] iterated logarithms, but expressed as
+  /// an offset rather than an absolute height.
+  ///
+  /// Reference: `layeradd(diff, base, linear)`.
+  Decimal layerAdd(num diff, Decimal base, {bool linear = false}) {
+    final double d = diff.toDouble();
+
+    if (base > one && base._lteNaNTrue(_convergenceLimit)) {
+      // Bases whose infinite tower converges need the extended super-logarithm,
+      // because ordinary slog cannot describe values above `base^^Infinity`.
+      final (Decimal excess, int range) = _excessSlog(this, base, linear);
+      final double slogdest = excess.toDouble() + d;
+      final Decimal negln = -base.ln();
+      final Decimal lower = negln.lambertW() / negln;
+      final Decimal upper = negln.lambertW(principal: false) / negln;
+      Decimal slogzero = one;
+      if (range == 1) {
+        slogzero = (lower * upper).sqrt();
+      } else if (range == 2) {
+        slogzero = upper * two;
+      }
+      final Decimal slogone = base.pow(slogzero);
+      final double wholeheight = slogdest.floorToDouble();
+      final double fracheight = slogdest - wholeheight;
+      final Decimal towertop =
+          slogzero.pow(Decimal.fromNum(1 - fracheight)) *
+          slogone.pow(Decimal.fromNum(fracheight));
+      // `wholeheight` is whole, so this is safe even when it means iteratedlog.
+      return base.tetrate(wholeheight, payload: towertop, linear: linear);
+    }
+
+    final double slogdest = slog(base: base, linear: linear).toDouble() + d;
+    if (slogdest >= 0) {
+      return base.tetrate(slogdest, linear: linear);
+    } else if (!slogdest.isFinite) {
+      return nan;
+    } else if (slogdest >= -1) {
+      return base.tetrate(slogdest + 1, linear: linear).log(base);
+    }
+    return base.tetrate(slogdest + 2, linear: linear).log(base).log(base);
+  }
+
+  /// A super-logarithm for bases in `(1, e^(1/e)]` that also works above
+  /// `base^^Infinity`.
+  ///
+  /// Returns the value together with a range marker: 0 means below the lower
+  /// solution of `b^x == x`, where ordinary [slog] applies; 1 means between the
+  /// two solutions, with their geometric mean arbitrarily assigned a value of
+  /// 0; 2 means above the upper solution, with twice that solution assigned 0.
+  ///
+  /// The numbers themselves carry little meaning — the *difference* between two
+  /// of them does, which is all [layerAdd] needs. Reference: `excess_slog`,
+  /// which is private there for the same reason.
+  static (Decimal, int) _excessSlog(Decimal value, Decimal base, bool linear) {
+    final double baseNum = base.toDouble();
+    if (baseNum == 1 || baseNum <= 0) {
+      return (nan, 0);
+    }
+    if (baseNum > tetrationConvergenceLimit) {
+      return (value.slog(base: base, linear: linear), 0);
+    }
+
+    final Decimal negln = -base.ln();
+    Decimal lower = negln.lambertW() / negln;
+    Decimal upper = infinity;
+    if (baseNum > 1) {
+      upper = negln.lambertW(principal: false) / negln;
+    }
+    if (baseNum > tetrationConvergenceHotfix) {
+      upper = Decimal.fromNum(math.e);
+      lower = upper;
+    }
+
+    if (value < lower) {
+      return (value.slog(base: base, linear: linear), 0);
+    }
+    if (value == lower) {
+      return (infinity, 0);
+    }
+    if (value == upper) {
+      return (negativeInfinity, 2);
+    }
+
+    // Above the upper solution the tower is increasing, below it (but above the
+    // lower solution) it is decreasing; the two branches are mirror images.
+    final bool above = value > upper;
+    if (!above && !(value < upper && value > lower)) {
+      throw StateError('Unhandled behaviour in excess_slog');
+    }
+
+    final Decimal slogzero = above ? upper * two : (lower * upper).sqrt();
+    final Decimal slogone = base.pow(slogzero);
+    double estimate = 0;
+
+    if (above) {
+      if (value._gteNaNTrue(slogzero) && value < slogone) {
+        estimate = 0;
+      } else if (value._gteNaNTrue(slogone)) {
+        Decimal payload = slogone;
+        estimate = 1;
+        while (payload < value) {
+          payload = base.pow(payload);
+          estimate += 1;
+          if (payload.layer > 3) {
+            final double layersleft = (value.layer - payload.layer + 1)
+                .floorToDouble();
+            payload = base.iteratedExp(
+              layersleft,
+              payload: payload,
+              linear: linear,
+            );
+            estimate += layersleft;
+          }
+        }
+        if (payload > value) {
+          payload = payload.log(base);
+          estimate -= 1;
+        }
+      } else if (value < slogzero) {
+        Decimal payload = slogzero;
+        estimate = 0;
+        while (payload > value) {
+          payload = payload.log(base);
+          estimate -= 1;
+        }
+      }
+    } else {
+      if (value._lteNaNTrue(slogzero) && value > slogone) {
+        estimate = 0;
+      } else if (value._lteNaNTrue(slogone)) {
+        Decimal payload = slogone;
+        estimate = 1;
+        while (payload > value) {
+          payload = base.pow(payload);
+          estimate += 1;
+        }
+        if (payload < value) {
+          payload = payload.log(base);
+          estimate -= 1;
+        }
+      } else if (value > slogzero) {
+        Decimal payload = slogzero;
+        estimate = 0;
+        while (payload < value) {
+          payload = payload.log(base);
+          estimate -= 1;
+        }
+      }
+    }
+
+    // Bisect the fractional height, interpolating the tower top as a weighted
+    // geometric mean of the two whole-height anchors.
+    double fracheight = 0;
+    double stepSize = 0.5;
+    Decimal guess = zero;
+    while (stepSize > 1e-16) {
+      final double tested = fracheight + stepSize;
+      final Decimal towertop =
+          slogzero.pow(Decimal.fromNum(1 - tested)) *
+          slogone.pow(Decimal.fromNum(tested));
+      // The reference does not forward `linear` to this call; neither do we.
+      guess = base.iteratedExp(estimate, payload: towertop);
+      if (guess == value) {
+        return (Decimal.fromNum(estimate + tested), above ? 2 : 1);
+      } else if (above ? guess < value : guess > value) {
+        fracheight += stepSize;
+      }
+      stepSize /= 2;
+    }
+    if (!guess.equalsWithin(value, 1e-7)) {
+      return (nan, 0);
+    }
+    return (Decimal.fromNum(estimate + fracheight), above ? 2 : 1);
+  }
+
+  /// The Lambert W function: the `w` with `w * e^w == this`.
+  ///
+  /// Also called the omega function or the product logarithm. It is
+  /// multi-valued, but only two branches matter over the reals: [principal]
+  /// selects `W_0` when true (defined for `this >= -1/e`) and `W_-1` when false
+  /// (defined for `-1/e <= this <= 0`). Outside those domains the answer is
+  /// complex, and this returns [nan].
+  ///
+  /// ```dart
+  /// print(1.dec.lambertW()); // 0.5671432904097838, the omega constant
+  /// ```
+  ///
+  /// Solved iteratively — by Newton's method at layer 0, by Halley's method
+  /// above it. Very close to the branch point at `-1/e` the evaluation becomes
+  /// inaccurate and can fail to converge, in which case this throws a
+  /// [StateError] rather than returning a plausible wrong number; the reference
+  /// throws there too.
+  ///
+  /// Reference: `lambertw(principal)`.
+  Decimal lambertW({bool principal = true}) {
+    if (this < _lambertBranchPoint) {
+      return nan; // Complex.
+    }
+    if (principal) {
+      if (abs() < _lambertLinearFloor) {
+        return this;
+      } else if (mag < 0) {
+        return Decimal.fromNum(fLambertW(toDouble()));
+      } else if (layer == 0) {
+        return Decimal.fromNum(fLambertW(sign * mag));
+      } else if (this < _eee15) {
+        return _dLambertW(this);
+      }
+      // Numbers this large sometimes fail to converge, and at this size `ln` is
+      // close enough.
+      return ln();
+    }
+    if (sign == 1) {
+      return nan; // Complex.
+    }
+    if (layer == 0) {
+      return Decimal.fromNum(fLambertW(sign * mag, principal: false));
+    } else if (layer == 1) {
+      return _dLambertW(this, principal: false);
+    }
+    return -(-this).reciprocal().lambertW();
+  }
+
+  /// The Lambert W function evaluated in `Decimal` arithmetic, for magnitudes a
+  /// `double` cannot hold.
+  ///
+  /// Halley's method, from
+  /// [SciPy's `lambertw`](https://github.com/scipy/scipy/blob/main/scipy/special/xsf/lambertw.h).
+  /// Reference: `d_lambertw`.
+  static Decimal _dLambertW(
+    Decimal z, {
+    double tol = 1e-10,
+    bool principal = true,
+  }) {
+    if (!z.mag.isFinite) {
+      return z;
+    }
+
+    Decimal w;
+    if (principal) {
+      if (z == zero) {
+        return zero;
+      }
+      if (z == one) {
+        // Split out because the asymptotic series blows up here.
+        return Decimal.fromNum(omega);
+      }
+      w = z.ln();
+    } else {
+      if (z == zero) {
+        return negativeInfinity;
+      }
+      w = (-z).ln();
+    }
+
+    final Decimal tolerance = Decimal.fromNum(tol);
+    for (int i = 0; i < 100; i++) {
+      final Decimal ew = (-w).exp();
+      final Decimal wewz = w - z * ew;
+      final Decimal wn =
+          w - wewz / (w + one - (w + two) * wewz / (two * w + two));
+      if ((wn - w).abs() < wn.abs() * tolerance) {
+        return wn;
+      }
+      w = wn;
+    }
+
+    throw StateError('Lambert W iteration failed to converge: $z');
+  }
+
+  /// Pentation: this value tetrated to itself [height] times.
+  ///
+  /// One level above [tetrate], and the last hyper-operation this package
+  /// implements: `x.pentate(n)` is `x^^x^^...^^x` with `n` copies of `x`.
+  /// [payload] plays the same role it does in [tetrate].
+  ///
+  /// ```dart
+  /// print(2.dec.pentate(3)); // 65536, i.e. 2^^(2^^2)
+  /// ```
+  ///
+  /// It saturates almost immediately: `10.pentate(3)` already overflows even a
+  /// `Decimal`. There is no analytic approximation of pentation to non-integer
+  /// heights, so those always use the linear one, whatever [linear] says about
+  /// the tetration underneath.
+  ///
+  /// Reference: `pentate(height, payload, linear)`.
+  Decimal pentate(num height, {Decimal payload = one, bool linear = false}) {
+    final double oldheight = height.toDouble();
+    double whole = oldheight.floorToDouble();
+    final double fracheight = oldheight - whole;
+    Decimal p = payload;
+    Decimal prev = zero;
+    Decimal prevTwo = zero;
+
+    if (fracheight != 0) {
+      if (p == one) {
+        whole += 1;
+        p = Decimal.fromNum(fracheight);
+      } else {
+        // Safe despite the recursion: pentaLog only pentates with payload 1.
+        return pentate(
+          (p.pentaLog(base: this, linear: linear) + Decimal.fromNum(oldheight))
+              .toDouble(),
+          linear: linear,
+        );
+      }
+    }
+
+    if (whole > 0) {
+      for (double i = 0; i < whole;) {
+        prevTwo = prev;
+        prev = p;
+        p = tetrate(p.toDouble(), linear: linear);
+        i += 1;
+        // Under the linear approximation, once both the base and the payload
+        // are in (0, 1] they stay there, and x^^^p collapses to x^^p.
+        if (this > zero && _lteNaNTrue(one) && p > zero && p._lteNaNTrue(one)) {
+          return tetrate(whole - i, payload: p, linear: linear);
+        }
+        // Stop once it has settled. Bases close to 0 alternate between two
+        // values rather than converging to one, hence the second test.
+        if (p == prev ||
+            (p == prevTwo && i.remainder(2) == whole.remainder(2))) {
+          return _normalize(p.sign, p.layer, p.mag);
+        }
+        if (!p.layer.isFinite || !p.mag.isFinite) {
+          return _normalize(p.sign, p.layer, p.mag);
+        }
+        if (i > 10000) {
+          return p;
+        }
+      }
+    } else {
+      // Negative height is repeated slog, which is slow — but that is simply
+      // what it means, and there are no layer shortcuts to take.
+      for (double i = 0; i < -whole; i++) {
+        prev = p;
+        p = p.slog(base: this, linear: linear);
+        if (p == prev) {
+          return _normalize(p.sign, p.layer, p.mag);
+        }
+        if (!p.layer.isFinite || !p.mag.isFinite) {
+          return _normalize(p.sign, p.layer, p.mag);
+        }
+        if (i > 100) {
+          return p;
+        }
+      }
+    }
+
+    return p;
+  }
+
+  /// Penta-logarithm: how many times [base] has to be tetrated to reach this
+  /// value.
+  ///
+  /// The inverse of [pentate], and even slower-growing than [slog] — for bases
+  /// above 2 you will never see a result above 5.
+  ///
+  /// Found the same way [slog] is: an integer estimate, then a binary search
+  /// against [pentate] for [iterations] steps. Both halves run whole pentation
+  /// loops, so this is by far the most expensive method here; it is essentially
+  /// unusable on values at or below -1.
+  ///
+  /// Reference: `penta_log(base, iterations, linear)`.
+  Decimal pentaLog({
+    Decimal base = ten,
+    int iterations = 100,
+    bool linear = false,
+  }) {
+    // Bases at or below 1 oscillate, so the logarithm has no meaning.
+    if (base._lteNaNTrue(one)) {
+      return nan;
+    }
+    if (this == one) {
       return zero;
     }
-    final Decimal absmod = abs() % two;
-    return sign == -1 ? two - absmod : absmod;
+    if (this == infinity) {
+      return infinity;
+    }
+
+    Decimal value = one;
+    double result = 0;
+    double stepSize = 1;
+
+    if (this < negativeOne) {
+      // Somewhere between -1 and -2, depending on the base, `base^^x == x`.
+      // That x is `base^^^(-Infinity)`; nothing below it has an answer.
+      if (_lteNaNTrue(_negativeTwo)) {
+        return nan;
+      }
+      final Decimal limitcheck = base.tetrate(toDouble(), linear: linear);
+      if (this == limitcheck) {
+        return negativeInfinity;
+      }
+      if (this > limitcheck) {
+        return nan;
+      }
+    }
+
+    // Pentation runs through every tetration step anyway, so walking to the
+    // nearest integer one step at a time beats calling pentate repeatedly.
+    if (this > one) {
+      while (value < this) {
+        result++;
+        value = base.tetrate(value.toDouble(), linear: linear);
+        if (result > 1000) {
+          return nan; // Almost certainly a limit rather than a slow climb.
+        }
+      }
+    } else {
+      while (value > this) {
+        result--;
+        value = value.slog(base: base, linear: linear);
+        // The reference guards this loop with `result > 1000` on a counter that
+        // only ever decreases, so its guard can never fire and it can spin
+        // forever. The bound is applied in the direction it was plainly meant
+        // to go. Any input that reaches it is one the reference never returns
+        // from at all, so no observable behaviour changes.
+        if (result < -100) {
+          return nan;
+        }
+      }
+    }
+
+    for (int i = 1; i < iterations; i++) {
+      final Decimal candidate = base.pentate(result, linear: linear);
+      if (candidate == this) {
+        break;
+      }
+      stepSize = stepSize.abs() * (candidate > this ? -1 : 1);
+      result += stepSize;
+      stepSize /= 2;
+      if (stepSize == 0) {
+        break;
+      }
+    }
+    return Decimal.fromNum(result);
   }
 
   // ---------------------------------------------------------------------------
