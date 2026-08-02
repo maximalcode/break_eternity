@@ -26,6 +26,17 @@ import 'package:test/test.dart';
 /// implementation's own helper (a bug in it would then hide itself).
 double log10(double x) => math.log(x) * math.log10e;
 
+/// Exactly `2^e`, built by repeated multiplication so that no library call
+/// (and in particular neither `math.pow` nor the implementation's own helpers)
+/// can put a rounding error into the test's input.
+double _exactPowerOfTwo(int e) {
+  double result = 1.0;
+  for (int i = 0; i < e.abs(); i++) {
+    result = e < 0 ? result / 2.0 : result * 2.0;
+  }
+  return result;
+}
+
 /// The boundaries from the API contract, restated independently.
 final double expLimit = 9e15;
 final double layerDown = log10(9e15); // 15.954242509439325
@@ -1040,6 +1051,83 @@ void main() {
             reason: 'v=$v digits=$digits',
           );
         }
+      }
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Exactness, which the fixtures' relative tolerance cannot assert
+  // ---------------------------------------------------------------------------
+
+  group('exact logarithms and powers', () {
+    test('log2 is exact on every power of two it can name', () {
+      // `log2` used to be `log10(x) / log10(2)`, which returns
+      // -10.999999999999998 for 2^-11 where V8's `Math.log2` returns exactly
+      // -11 — so `2^-11 .log2().ceil()` was -10 here and -11 in the reference.
+      // It is now the fdlibm `__ieee754_log2` port, which reduces an exact
+      // power of two to `f == 0` and returns the exponent with no rounding.
+      // The layer-0 domain is 2^-52 .. 2^52; above that the reference itself
+      // multiplies the mag by a rounded log2(10) and is inexact, and this port
+      // matches it there.
+      for (int e = -52; e <= 52; e++) {
+        final double x = _exactPowerOfTwo(e);
+        final Decimal got = Decimal.fromNum(x).log2();
+        expect(
+          got,
+          Decimal.fromNum(e.toDouble()),
+          reason: 'log2(2^$e) on x = $x gave ${got.mag} (sign ${got.sign})',
+        );
+      }
+    });
+
+    test('log10 and pow10 are exact inverses on exact powers of ten', () {
+      // The lookup table in `constants.dart` exists for this: a game that
+      // renders `1e30` must not be shown `9.999999999999918e29`.
+      for (int e = -323; e <= 308; e++) {
+        expect(
+          Decimal.parse('1e$e').log10(),
+          Decimal.fromNum(e.toDouble()),
+          reason: 'log10(1e$e)',
+        );
+      }
+
+      // pow10 only round-trips down to 1e-4. Below that `10^e` is under the
+      // reference's 0.1 floor, so the layer-0 branch is abandoned and the
+      // answer rebuilt one layer up, which costs the subnormal decades their
+      // last digits: `Decimal.fromNum(-320).pow10()` is 1.0000000000002618e-320
+      // rather than 1e-320. That is not a porting error — break_eternity.js
+      // misses exactly the same 258 exponents (the two sets were compared
+      // element by element against the vendored bundle), and all of them are
+      // inside the `pow10` fixture.
+      for (int e = -4; e <= 308; e++) {
+        expect(
+          Decimal.fromNum(e.toDouble()).pow10(),
+          Decimal.parse('1e$e'),
+          reason: 'pow10($e)',
+        );
+      }
+    });
+
+    test('pow and root agree with the dedicated square and cube helpers', () {
+      // sqr/cube are `pow(2)`/`pow(3)` in the reference, so the identity has to
+      // hold to the last bit, not to a tolerance.
+      final List<Decimal> values = <Decimal>[
+        Decimal.fromNum(2),
+        Decimal.fromNum(-2),
+        Decimal.fromNum(1e100),
+        Decimal.fromNum(1e-100),
+        Decimal.fromComponents(1, 2, 100),
+        Decimal.fromComponents(-1, 3, 1000),
+      ];
+      for (final Decimal v in values) {
+        expect(v.sqr(), v.pow(Decimal.two), reason: 'sqr($v)');
+        expect(v.cube(), v.pow(Decimal.fromNum(3)), reason: 'cube($v)');
+        // powBase is pow with the operands swapped, and nothing else.
+        expect(
+          Decimal.two.powBase(v),
+          v.pow(Decimal.two),
+          reason: 'powBase($v)',
+        );
       }
     });
   });

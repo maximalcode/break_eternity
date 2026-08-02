@@ -10,10 +10,30 @@ Initial release: the core `Decimal` value type.
   rounding family (`floor`, `ceil`, `round`, `truncate`).
 - Full comparison surface including tolerance-based variants.
 - Conversions to and from `num` and `String`.
+- Logarithms: `log10`, `absLog10`, `pLog10`, `log2`, `ln` and `log(base)`.
+- Powers and roots: `pow`, `pow10`, `powBase`, `root`, `sqr`, `sqrt`, `cube`,
+  `cbrt` and `exp`.
+- The incremental-game series helpers, in closed form and constant time at any
+  scale: `affordGeometricSeries`, `sumGeometricSeries`,
+  `affordArithmeticSeries`, `sumArithmeticSeries` and `efficiencyOfPurchase`.
+  These are what let a game offer "buy max" when the player's balance has long
+  since passed the point where a purchase loop could terminate.
 - Verified against the JavaScript reference implementation with generated
-  fixtures and a native-`double` oracle suite.
-- Self-contained software `log10` (no dependency on the host C library's
-  `log`), so results are identical on the Dart VM, dart2js and Wasm.
+  fixtures (34 operations, 26,978 cases) and a native-`double` oracle suite,
+  both run on the Dart VM and on dart2js.
+- Self-contained software `log10` and `log2` (no dependency on the host C
+  library's `log`), so results are identical on the Dart VM, dart2js and Wasm,
+  and exact inputs give exact answers: `1e30.dec.log10()` is exactly 30, and
+  `log2` is exact on every power of two between 2^-52 and 2^52 (above that the
+  reference is inexact too, and this port matches it). `ln` and `exp` keep
+  calling `dart:math`, because the reference calls `Math.log`/`Math.exp`; they
+  are the two functions whose last bit is platform-dependent.
+
+Note on the software `log2`: an earlier draft computed it as
+`log10(x) / log10(2)`, which returns `-10.999999999999998` for 2^-11 where
+JavaScript returns exactly `-11`. It is now a port of the same fdlibm
+`__ieee754_log2` that V8 ships, verified bit-identical to `Math.log2` on a
+39,000-value corpus on the VM and a 56,000-value corpus under dart2js.
 
 Hardening against hostile save data, from a pre-release security review. Save
 strings are attacker-controlled in a shipped game, so `parse` and `tryParse`

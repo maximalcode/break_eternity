@@ -87,7 +87,7 @@ class Decimal implements Comparable<Decimal> {
   /// is immediately folded into the layer/mag representation. Reference:
   /// `fromMantissaExponent`.
   factory Decimal.fromMantissaExponent(double mantissa, double exponent) =>
-      _normalize(mantissa.sign, 1, exponent + log10(mantissa.abs()));
+      _normalize(mantissa.sign, 1, exponent + _log10(mantissa.abs()));
 
   /// Parses [source], throwing a [FormatException] if it cannot be read.
   ///
@@ -277,7 +277,7 @@ class Decimal implements Comparable<Decimal> {
     // Rule 4: layer 0 shifts to the "first negative layer" once mag gets too
     // small to keep resolution, e.g. 1e-20 becomes (1, 1, -20).
     if (layer == 0 && mag < firstNegLayer) {
-      return Decimal._(sign, layer + 1, log10(mag));
+      return Decimal._(sign, layer + 1, _log10(mag));
     }
 
     double absmag = mag.abs();
@@ -286,7 +286,7 @@ class Decimal implements Comparable<Decimal> {
     // Rule 5: a mag too big for a double's integer range moves up a layer.
     // One step always suffices: log10 of anything <= 1.8e308 is under 309.
     if (absmag >= expLimit) {
-      return Decimal._(sign, layer + 1, signmag * log10(absmag));
+      return Decimal._(sign, layer + 1, signmag * _log10(absmag));
     }
 
     // Rule 6a: a zero magnitude never grows, so the loop below degenerates into
@@ -451,7 +451,7 @@ class Decimal implements Comparable<Decimal> {
         }
         final double exponent = double.parse(scientific.group(2)!);
         // 2e10 is 10^log10(2e10), which is 10^(10 + log10(2)).
-        return _normalize(mantissa.sign, 1, exponent + log10(mantissa.abs()));
+        return _normalize(mantissa.sign, 1, exponent + _log10(mantissa.abs()));
       }
     }
 
@@ -496,7 +496,7 @@ class Decimal implements Comparable<Decimal> {
     if (sign == 0) {
       return 0;
     } else if (layer == 0) {
-      final double exp = log10(mag).floorToDouble();
+      final double exp = _log10(mag).floorToDouble();
       final double man;
       if (mag == 5e-324) {
         // The smallest subnormal divides badly; special-cased upstream too.
@@ -521,7 +521,7 @@ class Decimal implements Comparable<Decimal> {
     if (sign == 0) {
       return 0;
     } else if (layer == 0) {
-      return log10(mag).floorToDouble();
+      return _log10(mag).floorToDouble();
     } else if (layer == 1) {
       return mag.floorToDouble();
     } else if (layer == 2) {
@@ -868,21 +868,25 @@ class Decimal implements Comparable<Decimal> {
 
     if (layerA == 0 && layerB == -1) {
       // a is layer 0, b is a layer-1 reciprocal (something below 1/9e15).
-      if ((b.mag - log10(a.mag)).abs() > maxSignificantDigits) {
+      if ((b.mag - _log10(a.mag)).abs() > maxSignificantDigits) {
         return a;
       }
-      final double magdiff = math.pow(10, log10(a.mag) - b.mag).toDouble();
+      final double magdiff = math.pow(10, _log10(a.mag) - b.mag).toDouble();
       final double mantissa = b.sign + a.sign * magdiff;
-      return _normalize(mantissa.sign, 1, b.mag + log10(mantissa.abs()));
+      return _normalize(mantissa.sign, 1, b.mag + _log10(mantissa.abs()));
     }
 
     if (layerA == 1 && layerB == 0) {
-      if ((a.mag - log10(b.mag)).abs() > maxSignificantDigits) {
+      if ((a.mag - _log10(b.mag)).abs() > maxSignificantDigits) {
         return a;
       }
-      final double magdiff = math.pow(10, a.mag - log10(b.mag)).toDouble();
+      final double magdiff = math.pow(10, a.mag - _log10(b.mag)).toDouble();
       final double mantissa = b.sign + a.sign * magdiff;
-      return _normalize(mantissa.sign, 1, log10(b.mag) + log10(mantissa.abs()));
+      return _normalize(
+        mantissa.sign,
+        1,
+        _log10(b.mag) + _log10(mantissa.abs()),
+      );
     }
 
     // Short-circuits 3 and 4: both operands are layer 1.
@@ -891,7 +895,7 @@ class Decimal implements Comparable<Decimal> {
     }
     final double magdiff = math.pow(10, a.mag - b.mag).toDouble();
     final double mantissa = b.sign + a.sign * magdiff;
-    return _normalize(mantissa.sign, 1, b.mag + log10(mantissa.abs()));
+    return _normalize(mantissa.sign, 1, b.mag + _log10(mantissa.abs()));
   }
 
   /// The difference between this and [other]. Reference: `sub()`.
@@ -964,7 +968,7 @@ class Decimal implements Comparable<Decimal> {
     }
 
     if (a.layer == 1 && b.layer == 0) {
-      return _normalize(a.sign * b.sign, 1, a.mag + log10(b.mag));
+      return _normalize(a.sign * b.sign, 1, a.mag + _log10(b.mag));
     }
 
     if (a.layer == 1 && b.layer == 1) {
@@ -1217,6 +1221,580 @@ class Decimal implements Comparable<Decimal> {
   /// The reference's `maxabs()`: whichever operand is larger in absolute
   /// value, keeping its own sign.
   Decimal _maxAbs(Decimal other) => _cmpAbs(other) < 0 ? other : this;
+
+  // ---------------------------------------------------------------------------
+  // Logarithms
+  // ---------------------------------------------------------------------------
+
+  /// "Positive log10": [log10] for non-negative values, zero for negatives.
+  ///
+  /// Useful for progress bars and other displays that take the logarithm of a
+  /// resource which is not supposed to go negative, where a [nan] would poison
+  /// the whole layout. [nan] itself still comes out as [nan].
+  ///
+  /// ```dart
+  /// print(1000.dec.pLog10()); // 3
+  /// print((-5).dec.pLog10()); // 0
+  /// ```
+  ///
+  /// Reference: `pLog10()`.
+  Decimal pLog10() {
+    if (this < zero) {
+      return zero;
+    }
+    return log10();
+  }
+
+  /// The base-10 logarithm of `this.abs()`.
+  ///
+  /// Differs from [log10] only in sign handling: negatives get a real answer
+  /// here instead of [nan]. `Decimal.zero.absLog10()` is still [nan], because
+  /// the logarithm of zero is not a `Decimal`. Reference: `absLog10()`.
+  Decimal absLog10() {
+    if (sign == 0) {
+      return nan;
+    } else if (layer > 0) {
+      // reference/index.ts absLog10(), layer 1+ case: a layer is exactly one
+      // application of 10^x, so the logarithm just peels one off.
+      return _normalize(mag.sign, layer - 1, mag.abs());
+    } else {
+      return _normalize(1, 0, _log10(mag));
+    }
+  }
+
+  /// The base-10 logarithm: the `X` with `10^X == this`.
+  ///
+  /// Zero and negatives give [nan]. Above layer 0 this is "subtract one from
+  /// [layer] and renormalise", which is why the logarithm of a colossal number
+  /// costs no more than the logarithm of a small one.
+  ///
+  /// ```dart
+  /// print(1e100.dec.log10());                    // 100
+  /// print(Decimal.fromComponents(1, 3, 100).log10()); // ee100
+  /// ```
+  ///
+  /// Reference: `log10()`.
+  Decimal log10() {
+    if (sign <= 0) {
+      return nan;
+    } else if (layer > 0) {
+      return _normalize(mag.sign, layer - 1, mag.abs());
+    } else {
+      return _normalize(sign, 0, _log10(mag));
+    }
+  }
+
+  /// The logarithm of this value in the given [base]: the `X` with
+  /// `base^X == this`.
+  ///
+  /// [nan] if either side is zero or negative, or if [base] is exactly 1
+  /// (every power of 1 is 1, so the inverse does not exist).
+  ///
+  /// ```dart
+  /// print(1024.dec.log(2.dec)); // 10
+  /// ```
+  ///
+  /// Reference: `log(base)`, which the reference also exposes under the name
+  /// `logarithm`; this port keeps one name for one function. When both sides
+  /// are at layer 0 it is a ratio of `dart:math` `log`s — see the note on
+  /// [ln] about that function's platform dependence — and otherwise a ratio of
+  /// [log10]s, which is what makes the base meaningful across layers.
+  ///
+  /// Because of that split, `x.log(10.dec)` is not always bit-identical to
+  /// `x.log10()`, and `x.log(2.dec)` is not always [log2]: the dedicated
+  /// methods use the software logarithms in `constants.dart`, this one uses the
+  /// host libm at layer 0. The reference has the identical split and the same
+  /// disagreements, so this is fidelity rather than a defect — but prefer
+  /// [log10] and [log2] when the base is 10 or 2, because they are exact on
+  /// exact powers and reproducible across Dart targets.
+  Decimal log(Decimal base) {
+    if (sign <= 0) {
+      return nan;
+    }
+    if (base.sign <= 0) {
+      return nan;
+    }
+    if (base.sign == 1 && base.layer == 0 && base.mag == 1) {
+      return nan;
+    } else if (layer == 0 && base.layer == 0) {
+      // reference/index.ts log(base), layer-0 fast path: a ratio of natural
+      // logarithms, exactly as the reference computes it.
+      return _normalize(sign, 0, math.log(mag) / math.log(base.mag));
+    }
+
+    return log10() / base.log10();
+  }
+
+  /// The base-2 logarithm: the `X` with `2^X == this`.
+  ///
+  /// Zero and negatives give [nan]. Reference: `log2()`.
+  Decimal log2() {
+    if (sign <= 0) {
+      return nan;
+    } else if (layer == 0) {
+      return _normalize(sign, 0, _log2(mag));
+    } else if (layer == 1) {
+      // log2(10^mag) == mag * log2(10).
+      return _normalize(mag.sign, 0, mag.abs() * 3.321928094887362);
+    } else if (layer == 2) {
+      // log2(10^10^mag) == 10^mag * log2(10), and log10 of that is
+      // mag + log10(log2(10)) == mag - log10(log10(2)).
+      return _normalize(mag.sign, 1, mag.abs() + 0.5213902276543247);
+    } else {
+      // Three layers up, multiplying by log2(10) is lost in the rounding.
+      return _normalize(mag.sign, layer - 1, mag.abs());
+    }
+  }
+
+  /// The natural (base-e) logarithm: the `X` with `e^X == this`.
+  ///
+  /// Zero and negatives give [nan]. Reference: `ln()`.
+  ///
+  /// The layer-0 case goes through `dart:math`'s `log`, exactly as the
+  /// reference goes through `Math.log`. That is the host platform's libm, so
+  /// unlike the software `log10` in `constants.dart` its last bit can differ
+  /// between the VM and dart2js; it disagrees with V8 on 2 of the 679 `ln`
+  /// fixture cases. Substituting `log10(x) / log10(e)` would be reproducible
+  /// but disagrees on 19, and nothing in the representation depends on `ln`
+  /// the way normalisation depends on `log10`, so fidelity wins.
+  Decimal ln() {
+    if (sign <= 0) {
+      return nan;
+    } else if (layer == 0) {
+      return _normalize(sign, 0, math.log(mag));
+    } else if (layer == 1) {
+      // ln(10^mag) == mag * ln(10).
+      return _normalize(mag.sign, 0, mag.abs() * 2.302585092994046);
+    } else if (layer == 2) {
+      // As in [log2]: log10(ln(10)) == -log10(log10(e)).
+      return _normalize(mag.sign, 1, mag.abs() + 0.36221568869946325);
+    } else {
+      return _normalize(mag.sign, layer - 1, mag.abs());
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Powers and roots
+  // ---------------------------------------------------------------------------
+
+  /// This value raised to the power [other].
+  ///
+  /// The general route is `10^(log10(|this|) * other)`, with the sign put back
+  /// afterwards; the special cases in front of it are what make the identities
+  /// hold exactly:
+  ///
+  /// * `0^0` is 1, every other `0^b` is 0;
+  /// * `1^b` is 1 and `a^0` is 1, for every `b` and `a` including [nan];
+  /// * `a^1` is `a`.
+  ///
+  /// A negative base only has a real power when the exponent is an integer:
+  /// the result is negated for odd exponents, kept for even ones, and [nan]
+  /// otherwise (`(-8)^(1/3)` is [nan] here — use [cbrt], which handles the
+  /// sign itself).
+  ///
+  /// ```dart
+  /// print(2.dec.pow(1000.dec));   // 1.071508607186271e301
+  /// print(10.dec.pow(1e100.dec)); // ee100
+  /// print((-2).dec.pow(3.dec));   // -7.999999999999999
+  /// print((-2).dec.pow(0.5.dec)); // NaN
+  /// ```
+  ///
+  /// The `-8` above is off by an ulp because the route through `log10` and
+  /// `pow10` is not exact — the JavaScript original prints the same thing.
+  ///
+  /// Reference: `pow(value)`.
+  Decimal pow(Decimal other) {
+    final Decimal a = this;
+    final Decimal b = other;
+
+    // Special case: if a is 0, then return 0 (UNLESS b is 0, then return 1).
+    if (a.sign == 0) {
+      return b == zero ? one : a;
+    }
+    // Special case: if a is 1, then return 1.
+    if (a.sign == 1 && a.layer == 0 && a.mag == 1) {
+      return a;
+    }
+    // Special case: if b is 0, then return 1.
+    if (b.sign == 0) {
+      return one;
+    }
+    // Special case: if b is 1, then return a.
+    if (b.sign == 1 && b.layer == 0 && b.mag == 1) {
+      return a;
+    }
+
+    final Decimal result = (a.absLog10() * b).pow10();
+
+    if (sign == -1) {
+      // reference/index.ts pow(), negative-base case. `remainder` is used
+      // rather than Dart's `%` because it is JavaScript's `%`: truncated
+      // division, so the sign of the exponent does not change the parity.
+      final double parity = b.toDouble().remainder(2).abs().remainder(2);
+      if (parity == 1) {
+        return -result;
+      } else if (parity == 0) {
+        return result;
+      }
+      // A fractional (or non-finite) exponent on a negative base.
+      return nan;
+    }
+
+    return result;
+  }
+
+  /// 10 raised to the power of this value.
+  ///
+  /// For values above 1 this is just "add one to [layer]", which is how a
+  /// `Decimal` reaches magnitudes a `double` cannot name. Reference: `pow10()`,
+  /// whose four layer-1+ cases are:
+  ///
+  /// 1. positive sign, positive mag (`e15`, `ee15`): +1 layer;
+  /// 2. negative sign, positive mag (`-e15`): +1 layer, both signs flipped;
+  /// 3. and 4. negative mag (`e-15`): the layer-0 branch already handled
+  ///    everything that is not 1 to within a rounding error, so the answer is 1.
+  ///
+  /// ```dart
+  /// print(3.dec.pow10());    // 1000
+  /// print(1e16.dec.pow10()); // ee16
+  /// ```
+  Decimal pow10() {
+    if (this == infinity) {
+      return infinity;
+    }
+    if (this == negativeInfinity) {
+      return zero;
+    }
+    if (!layer.isFinite || !mag.isFinite) {
+      return nan;
+    }
+
+    Decimal a = this;
+
+    // Layer 0: if no precision is lost use the double power, else promote one
+    // layer. The 0.1 floor is the reference's: below it the double result is
+    // subnormal enough that the layered form carries more digits.
+    if (a.layer == 0) {
+      final double newmag = _pow10Double(a.sign * a.mag);
+      if (newmag.isFinite && newmag.abs() >= 0.1) {
+        return _normalize(1, 0, newmag);
+      }
+      if (a.sign == 0) {
+        return one;
+      }
+      a = Decimal._(a.sign, a.layer + 1, _log10(a.mag));
+    }
+
+    if (a.sign > 0 && a.mag >= 0) {
+      return _normalize(a.sign, a.layer + 1, a.mag);
+    }
+    if (a.sign < 0 && a.mag >= 0) {
+      return _normalize(-a.sign, a.layer + 1, -a.mag);
+    }
+    // Both negative-mag cases are identical: one +/- rounding error.
+    return one;
+  }
+
+  /// [base] raised to the power of this value: `base ^ this`.
+  ///
+  /// The mirror image of [pow], for when the exponent is the value in hand:
+  /// `exponent.powBase(base)` reads the same way as `base.pow(exponent)` and
+  /// returns the same number. Reference: `pow_base(value)`.
+  Decimal powBase(Decimal base) => base.pow(this);
+
+  /// The [degree]-th root: the `X` with `X ^ degree == this`.
+  ///
+  /// Equivalent to `pow(degree.reciprocal())`, except that a negative value
+  /// under an odd-integer root keeps its sign instead of giving [nan] — the
+  /// real cube root of -8 is -2.
+  ///
+  /// ```dart
+  /// print(1e100.dec.root(2.dec)); // 1e50
+  /// print((-8).dec.root(3.dec));  // -1.9999999999999998, i.e. -2
+  /// ```
+  ///
+  /// Reference: `root(value)`.
+  Decimal root(Decimal degree) {
+    if (this < zero && degree._flooredModTwo() == one) {
+      return -(-this).root(degree);
+    }
+    return pow(degree.reciprocal());
+  }
+
+  /// Base-e exponentiation: `e^this`.
+  ///
+  /// Reference: `exp()`. The hard-coded constants are `log10(e)` and
+  /// `log10(log10(e))`, which convert between the natural and base-10 towers.
+  ///
+  /// Like [ln], the layer-0 branch calls `dart:math`'s `exp`, which is the host
+  /// platform's libm rather than a software routine, exactly as the reference
+  /// calls `Math.exp`. Its last bit therefore depends on the target: it
+  /// disagrees with V8 on 3 of the 679 `exp` fixture cases on the Dart VM
+  /// (`(-10).dec.exp()` is `0.000045399929762484854` here against
+  /// `0.00004539992976248485` there) and agrees on all of them under dart2js,
+  /// where `math.exp` *is* `Math.exp`. Everything above layer 0 goes through
+  /// the software [_log10] and is reproducible.
+  Decimal exp() {
+    if (mag < 0) {
+      // e^(something smaller than 1/9e15) is 1 to within a rounding error.
+      return one;
+    }
+    if (layer == 0 && mag <= 709.7) {
+      // The largest exponent whose result still fits in a double.
+      return Decimal.fromNum(math.exp(sign * mag));
+    } else if (layer == 0) {
+      return _normalize(1, 1, sign * _log10(math.e) * mag);
+    } else if (layer == 1) {
+      return _normalize(1, 2, sign * (_log10(0.4342944819032518) + mag));
+    } else {
+      // Above layer 1 the factor of log10(e) is lost in the rounding.
+      return _normalize(1, layer + 1, sign * mag);
+    }
+  }
+
+  /// This value squared. Reference: `sqr()`.
+  Decimal sqr() => pow(two);
+
+  /// The square root: the non-negative `X` with `X * X == this`.
+  ///
+  /// [nan] for negative values. Reference: `sqrt()`; the layer-1 constant is
+  /// `log10(2)`, since `sqrt(10^m) == 10^(m/2)` and dividing a mag by two is
+  /// subtracting `log10(2)` one layer up.
+  ///
+  /// **Two inherited quirks, both faithful to break_eternity.js.** The layer-1
+  /// branch takes `log10(mag)`, and a value below `1/9e15` is stored at layer 1
+  /// with a *negative* mag, so `Decimal.fromNum(1e-30).sqrt()` is [nan] rather
+  /// than `1e-15`; use `pow(0.5.dec)` or [cbrt], which take a different route.
+  /// From layer 2 up the sign is never checked, so `(-inf).sqrt()` is `-inf`.
+  ///
+  /// The layer-1 branch is also the most visible consumer of the last-ulp
+  /// residue in the software `log10` (see `constants.dart`): a handful of
+  /// layer-1 magnitudes — `Decimal.fromComponents(1, 1, 19.652149670124494)`
+  /// is one — come back a few ulps from what V8 produces, because the [pow10]
+  /// that follows amplifies an ulp of the mag into ~5e-5 of the result. 0.3% of
+  /// layer-1 mags in `[16, 26]` are affected. This is not a wrong constant or a
+  /// wrong branch, and the residue is inherent to matching two different libms.
+  Decimal sqrt() {
+    if (layer == 0) {
+      return Decimal.fromNum(math.sqrt(sign * mag));
+    } else if (layer == 1) {
+      return _normalize(1, 2, _log10(mag) - 0.3010299956639812);
+    } else {
+      // Halving one layer down, then putting the layer back.
+      final Decimal result = Decimal._(sign, layer - 1, mag) / two;
+      return _normalize(result.sign, result.layer + 1, result.mag);
+    }
+  }
+
+  /// This value cubed. Reference: `cube()`.
+  Decimal cube() => pow(_three);
+
+  /// The cube root: the `X` with `X * X * X == this`, negative for negatives.
+  ///
+  /// Reference: `cbrt()`.
+  Decimal cbrt() {
+    if (this < zero) {
+      return -(-this).pow(_oneThird);
+    }
+    return pow(_oneThird);
+  }
+
+  /// The number 3, for [cube].
+  static const Decimal _three = Decimal._(1, 0, 3);
+
+  /// One third, for [cbrt]: the `double` nearest 1/3, as the reference's `1/3`.
+  static final Decimal _oneThird = Decimal.fromNum(1 / 3);
+
+  /// The reference's `mod(value, floored: true)` for a divisor of 2.
+  ///
+  /// [root] needs to know whether its degree is an odd integer, and the
+  /// reference asks that question with the *floored* modulo — the one that
+  /// agrees with number theory, where `-3 mod 2` is 1 rather than -1. The
+  /// public [operator %] is the truncated modulo (JavaScript's `%`), so this
+  /// private helper covers the one case milestone 2 needs.
+  /// TODO(m3): expose the floored modulo properly.
+  Decimal _flooredModTwo() {
+    if (isZero) {
+      return zero;
+    }
+    final Decimal absmod = abs() % two;
+    return sign == -1 ? two - absmod : absmod;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Incremental-game series helpers
+  // ---------------------------------------------------------------------------
+  //
+  // Ported from the reference's `*_core` statics, which is where the real
+  // formulas live; the reference's non-`_core` wrappers only coerce their
+  // arguments.
+
+  /// How many more items you can afford when the price multiplies each time.
+  ///
+  /// The classic idle-game generator: the first one ever sold cost
+  /// [priceStart], each subsequent one costs [priceRatio] times the last, and
+  /// you already own [currentOwned] of them. Answers "how many can I buy right
+  /// now with [resourcesAvailable]?", floored, so it is safe to feed straight
+  /// into a purchase loop.
+  ///
+  /// ```dart
+  /// // 1e6 gold, generators start at 10 gold and get 15% dearer each time,
+  /// // and you already own 42.
+  /// final n = Decimal.affordGeometricSeries(
+  ///   1e6.dec, 10.dec, 1.15.dec, 42.dec,
+  /// );
+  /// print(n); // 26 — the 43rd generator through the 68th
+  /// // Buying all 26 costs:
+  /// print(Decimal.sumGeometricSeries(n, 10.dec, 1.15.dec, 42.dec));
+  /// // 870433.5234942113, which is indeed under the 1e6 available
+  /// ```
+  ///
+  /// [currentOwned] is the count you own *now*, not the index of the next
+  /// purchase: the first item ever bought costs `priceStart * priceRatio^0`, so
+  /// owning 42 means the next one costs `priceStart * priceRatio^42` (here
+  /// 3542.49...). Passing the wrong one silently over- or undercharges by a
+  /// whole step of the ratio.
+  ///
+  /// A [priceRatio] of exactly 1 gives [nan] (the formula divides by
+  /// `log10(1)`); use [affordArithmeticSeries] for prices that do not grow, or
+  /// plain division. Reference: `affordGeometricSeries_core`, adapted from the
+  /// Trimps source.
+  ///
+  /// **Knife edges.** The answer is a ratio of two logarithms with a [floor]
+  /// on the outside, so when the money on hand is *exactly* the price of a
+  /// whole number of items, one ulp in that ratio moves the answer by a whole
+  /// item. Two consequences worth knowing:
+  ///
+  /// * `Decimal.affordGeometricSeries(1.dec, 1.dec, 1.5.dec, 0.dec)` is 0, not
+  ///   1, because `log10(1.5) / log10(1.5)` evaluates to `0.9999999999999999`.
+  ///   break_eternity.js does the same.
+  /// * On roughly 1 in 16,000 exact round trips this port and break_eternity.js
+  ///   land on either side of the edge and differ by one — the software
+  ///   `log10` in `constants.dart` and V8's `Math.log10` disagree in the last
+  ///   ulp on about 0.09% of inputs. In the cases examined it was this port
+  ///   that gave the mathematically correct count, but the honest summary is
+  ///   that neither side is reliable to the last item at an exact boundary.
+  ///
+  /// Neither is a reason to distrust the result away from an exact boundary,
+  /// but do not build a test that asserts a specific count at one.
+  static Decimal affordGeometricSeries(
+    Decimal resourcesAvailable,
+    Decimal priceStart,
+    Decimal priceRatio,
+    Decimal currentOwned,
+  ) {
+    final Decimal actualStart = priceStart * priceRatio.pow(currentOwned);
+    return (((resourcesAvailable / actualStart) * (priceRatio - one) + one)
+                .log10() /
+            priceRatio.log10())
+        .floor();
+  }
+
+  /// What buying [numItems] more items costs when the price multiplies.
+  ///
+  /// The exact inverse of [affordGeometricSeries]: same [priceStart],
+  /// [priceRatio] and [currentOwned] semantics, but here you name the count and
+  /// get the price of the whole batch — the geometric series
+  /// `a*r^k + a*r^(k+1) + ... + a*r^(k+n-1)`.
+  ///
+  /// ```dart
+  /// // The next 10 generators, at 10 gold base, ratio 1.15, owning 42:
+  /// print(Decimal.sumGeometricSeries(10.dec, 10.dec, 1.15.dec, 42.dec));
+  /// // 71925.828439959
+  /// // ...and just the next one, which is priceStart * priceRatio^42:
+  /// print(Decimal.sumGeometricSeries(1.dec, 10.dec, 1.15.dec, 42.dec));
+  /// // 3542.49539895394
+  /// ```
+  ///
+  /// Reference: `sumGeometricSeries_core`.
+  static Decimal sumGeometricSeries(
+    Decimal numItems,
+    Decimal priceStart,
+    Decimal priceRatio,
+    Decimal currentOwned,
+  ) =>
+      priceStart *
+      priceRatio.pow(currentOwned) *
+      (one - priceRatio.pow(numItems)) /
+      (one - priceRatio);
+
+  /// How many more items you can afford when the price grows by a fixed step.
+  ///
+  /// The additive cousin of [affordGeometricSeries]: the first item cost
+  /// [priceStart] and every subsequent one costs [priceAdd] more than the last,
+  /// so owning [currentOwned] means the next one costs
+  /// `priceStart + currentOwned * priceAdd`.
+  ///
+  /// ```dart
+  /// // 1e6 gold, upgrades start at 100 and cost 50 more each time,
+  /// // and you already own 42.
+  /// print(Decimal.affordArithmeticSeries(
+  ///   1e6.dec, 100.dec, 50.dec, 42.dec,
+  /// )); // 161 — the next one costs 100 + 42*50 == 2200
+  /// ```
+  ///
+  /// Solves `n = (-(a - d/2) + sqrt((a - d/2)^2 + 2dS)) / d` for `n`, where `a`
+  /// is the next price, `d` is [priceAdd] and `S` is [resourcesAvailable], then
+  /// floors it. Reference: `affordArithmeticSeries_core`.
+  static Decimal affordArithmeticSeries(
+    Decimal resourcesAvailable,
+    Decimal priceStart,
+    Decimal priceAdd,
+    Decimal currentOwned,
+  ) {
+    final Decimal actualStart = priceStart + currentOwned * priceAdd;
+    final Decimal b = actualStart - priceAdd / two;
+    final Decimal b2 = b.pow(two);
+    return ((-b + (b2 + priceAdd * resourcesAvailable * two).sqrt()) / priceAdd)
+        .floor();
+  }
+
+  /// What buying [numItems] more items costs when the price grows by a step.
+  ///
+  /// The inverse of [affordArithmeticSeries], and the arithmetic series
+  /// `(n/2) * (2a + (n-1)d)` where `a` is the next price
+  /// (`priceStart + currentOwned * priceAdd`) and `d` is [priceAdd].
+  ///
+  /// ```dart
+  /// // The next 10 upgrades, at 100 base, +50 each, owning 42:
+  /// print(Decimal.sumArithmeticSeries(10.dec, 100.dec, 50.dec, 42.dec));
+  /// // 24250
+  /// ```
+  ///
+  /// Reference: `sumArithmeticSeries_core`, adapted from mathwords.com.
+  static Decimal sumArithmeticSeries(
+    Decimal numItems,
+    Decimal priceStart,
+    Decimal priceAdd,
+    Decimal currentOwned,
+  ) {
+    final Decimal actualStart = priceStart + currentOwned * priceAdd;
+    return numItems / two * (actualStart * two + (numItems - one) * priceAdd);
+  }
+
+  /// How wasteful a purchase is: **lower is better**.
+  ///
+  /// Given a purchase that costs [cost] and raises your income by [deltaRpS]
+  /// per second while you currently earn [currentRpS] per second, this scores
+  /// it as `cost/currentRpS + cost/deltaRpS` — the time spent saving up plus
+  /// the time the purchase takes to pay for itself. Compare the scores of two
+  /// candidate purchases and buy the smaller one.
+  ///
+  /// ```dart
+  /// // Earning 1000/s: a 5e4 building that adds 100/s, or a 2e5 one
+  /// // that adds 500/s?
+  /// final cheap = Decimal.efficiencyOfPurchase(5e4.dec, 1000.dec, 100.dec);
+  /// final dear = Decimal.efficiencyOfPurchase(2e5.dec, 1000.dec, 500.dec);
+  /// print(cheap); // 550
+  /// print(dear);  // 600 — so the cheap one wins
+  /// ```
+  ///
+  /// Reference: `efficiencyOfPurchase_core`, from Frozen Cookies.
+  static Decimal efficiencyOfPurchase(
+    Decimal cost,
+    Decimal currentRpS,
+    Decimal deltaRpS,
+  ) => cost / currentRpS + cost / deltaRpS;
 }
 
 /// Formats [value] the way JavaScript's `Number.prototype.toString` would.
@@ -1307,8 +1885,55 @@ double _jsRound(double x) {
   return x - floor >= 0.5 ? floor + 1 : floor;
 }
 
+/// The `log10` from `constants.dart`, under a name the class body can see.
+///
+/// [Decimal] has a `log10()` *method*, and a class member shadows an imported
+/// top-level function throughout the class body, so `log10(x)` inside the class
+/// would resolve to the no-argument method. This alias lives at the top level,
+/// where the import is still visible, and every internal caller goes through
+/// it. It is the fdlibm port in `constants.dart` — deliberately software rather
+/// than `math.log(x) / math.ln10`, so results are identical on the VM, dart2js
+/// and Wasm. Never add a second base-10 logarithm.
+double _log10(double x) => log10(x);
+
+/// The `log2` from `constants.dart`, under a name the class body can see.
+///
+/// Exactly the same shadowing problem as [_log10]: [Decimal] has a `log2()`
+/// method. The implementation is the fdlibm `__ieee754_log2` port, which is
+/// bit-identical to V8's `Math.log2` across a 39,000-value corpus on both the
+/// VM and dart2js — see its own doc. Never add a second base-2 logarithm.
+double _log2(double x) => log2(x);
+
+/// `10^exponent` as a `double`. Reference: the `Math.pow(10, ...)` in `pow10`.
+///
+/// Integral exponents go through the exact lookup table in `constants.dart`
+/// rather than `math.pow`, as a reproducibility guard: this is the step that
+/// turns a layer-1 value back into a plain `double`, so an ulp lost here is an
+/// ulp lost by every [Decimal.pow], [Decimal.root] and [Decimal.exp] result
+/// that lands at layer 0.
+///
+/// On the two targets measured (Dart 3.12 VM on macOS arm64, and dart2js on
+/// Node 24) the guard is currently a no-op: `math.pow(10, e).toDouble()` is
+/// the correctly rounded `double` for all 632 integral exponents in
+/// `[-323, 308]` on both, and V8's `Math.pow(10, n)` agrees, so neither branch
+/// can diverge from the reference today. The table stays because `math.pow` is
+/// the host libm on the VM and Wasm and is not specified to be exact, and
+/// because it costs one comparison.
+///
+/// Note that the exponent must be a `double`, not an `int`: `math.pow` with
+/// two `int` arguments does exact *integer* arithmetic, which on the VM wraps
+/// at 64 bits, so `math.pow(10, 22)` is `1864712049423024128`.
+double _pow10Double(double exponent) {
+  if (exponent == exponent.floorToDouble() &&
+      exponent >= numberExpMin + 1 &&
+      exponent <= numberExpMax) {
+    return powerOf10(exponent.toInt());
+  }
+  return math.pow(10, exponent).toDouble();
+}
+
 /// Signed log10: `sign(n) * log10(|n|)`. Reference: `f_maglog10`.
-double _magLog10(double n) => n.sign * log10(n.abs());
+double _magLog10(double n) => n.sign * _log10(n.abs());
 
 /// [_decimalPlaces] rendered with JavaScript's number formatting.
 ///
@@ -1324,7 +1949,7 @@ String _places(double value, int places) =>
 /// https://stackoverflow.com/a/37425022.
 double _decimalPlaces(double value, int places) {
   final double len = places + 1.0;
-  final double numDigits = log10(value.abs()).ceilToDouble();
+  final double numDigits = _log10(value.abs()).ceilToDouble();
   final double rounded =
       _jsRound(value * math.pow(10, len - numDigits).toDouble()) *
       math.pow(10, numDigits - len).toDouble();

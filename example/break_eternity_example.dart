@@ -14,6 +14,7 @@ void main() {
   _theSafeIntegerWall();
   _theOverflowWall();
   _lifeAboveTheWall();
+  _theShop();
   _saveAndLoad();
 }
 
@@ -98,6 +99,55 @@ void _lifeAboveTheWall() {
   final absurd = Decimal.parse('ee1000'); // 10^(10^1000)
   print('absurd        = $absurd');
   print('absurd * 2    = ${absurd * 2.dec}'); // doubling changes nothing here
+  print('');
+}
+
+/// The shop: buying a whole batch of generators without a purchase loop.
+///
+/// This is the part a game actually needs. When the player is holding `ee1000`
+/// gold, "buy max" cannot be a loop — there is no integer count of iterations.
+/// The series helpers answer it in closed form, in constant time.
+void _theShop() {
+  print('--- buy max ---');
+
+  // Generators: the first cost 10 gold, each one after is 15% dearer.
+  final gold = 1e6.dec;
+  final owned = 42.dec;
+  final affordable = Decimal.affordGeometricSeries(
+    gold,
+    10.dec,
+    1.15.dec,
+    owned,
+  );
+  final cost = Decimal.sumGeometricSeries(affordable, 10.dec, 1.15.dec, owned);
+  print('gold $gold, owning $owned generators');
+  print('  can buy       = $affordable');
+  print('  which costs   = $cost');
+  print(
+    '  one more      = ${Decimal.sumGeometricSeries(affordable + Decimal.one, 10.dec, 1.15.dec, owned)} (over budget)',
+  );
+
+  // The same question at a scale no double can express.
+  final hugeGold = Decimal.parse('e1000');
+  print(
+    'with $hugeGold gold you could buy '
+    '${Decimal.affordGeometricSeries(hugeGold, 10.dec, 1.15.dec, owned)}',
+  );
+
+  // Upgrades whose price grows by a fixed step instead of a fixed ratio.
+  final upgrades = Decimal.affordArithmeticSeries(gold, 100.dec, 50.dec, owned);
+  print(
+    'and $upgrades upgrades at 100 gold +50 each, costing '
+    '${Decimal.sumArithmeticSeries(upgrades, 100.dec, 50.dec, owned)}',
+  );
+
+  // Which of two purchases is the better deal? Lower is better.
+  final a = Decimal.efficiencyOfPurchase(550.dec, 100.dec, 10.dec);
+  final b = Decimal.efficiencyOfPurchase(600.dec, 100.dec, 12.dec);
+  print(
+    'efficiency: 550-for-+10 = $a, 600-for-+12 = $b '
+    '-> ${b < a ? 'the second' : 'the first'} is better',
+  );
   print('');
 }
 

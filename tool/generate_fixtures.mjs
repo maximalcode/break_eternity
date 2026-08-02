@@ -22,6 +22,27 @@
 // The `normalize` op is the odd one out: its "a" is a RAW, possibly invalid
 // component triple (built with fromComponents_noNormalize), and "r" is the
 // result of normalising it.
+//
+// N-ARY OPS ("args" shape)
+// ------------------------
+// The incremental-game series helpers take three or four Decimal arguments, so
+// the {a, b} shape does not fit them. Those files instead carry an "args"
+// array holding every argument, in the reference's declaration order, and no
+// "a"/"b" at all:
+//
+//   {"op": "efficiencyOfPurchase",
+//    "cases": [{"args": [[s,l,m], [s,l,m], [s,l,m]], "r": [s,l,m]}, ...]}
+//
+// Argument order per op (same as break_eternity.js):
+//
+//   affordGeometricSeries    [resourcesAvailable, priceStart, priceRatio, currentOwned]
+//   sumGeometricSeries       [numItems,           priceStart, priceRatio, currentOwned]
+//   affordArithmeticSeries   [resourcesAvailable, priceStart, priceAdd,   currentOwned]
+//   sumArithmeticSeries      [numItems,           priceStart, priceAdd,   currentOwned]
+//   efficiencyOfPurchase     [cost, currentRpS, deltaRpS]
+//
+// Every element of "args" is a normalised component triple encoded exactly like
+// "a"/"b"/"r" elsewhere in this file.
 
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
@@ -281,6 +302,279 @@ function normalizeCases(count) {
 }
 
 // ---------------------------------------------------------------------------
+// Milestone 2: value pools for logarithms, powers, roots and the series
+// helpers.
+//
+// The milestone-1 pool above is deliberately left untouched — its exact
+// contents are baked into the already-committed fixtures. Everything below adds
+// *new* pools that only the milestone-2 ops draw from.
+// ---------------------------------------------------------------------------
+
+/**
+ * Values that matter to logs / powers specifically: the neighbourhood of 1
+ * (where log changes sign and loses precision), e and the base-conversion
+ * constants the reference hard-codes, exact powers of two and ten, and a few
+ * high-layer towers.
+ */
+function powerCuratedValues() {
+  const fromNumbers = [
+    Math.E, 1 / Math.E, Math.E * Math.E, Math.LN10, Math.LN2, Math.SQRT2,
+    2, 4, 8, 16, 32, 1024, 0.1, 0.01, 0.25, 0.125,
+    1 - 1e-16, 1 + 1e-16, 1 - 1e-9, 1 + 1e-9, 0.999999999, 1.000000001,
+    1e-5, 1e5, 1e100, 1e-100, 1e300, 1e-300, 709.7, 709.8, 710,
+    // The magic constants baked into log2/ln/sqrt in the reference.
+    3.321928094887362, 0.5213902276543247, 2.302585092994046,
+    0.36221568869946325, 0.4342944819032518, 0.3010299956639812,
+    -Math.E, -2, -4, -0.1, -1e100, -1e-100,
+  ].map((n) => new Decimal(n));
+
+  const fromComponents = [];
+  for (const sign of [1, -1]) {
+    for (const layer of [1, 2, 3, 4, 10]) {
+      for (const mag of [
+        LAYER_DOWN, 16, 20, 100, 1e6, 1e15, EXP_LIMIT - 1, -16, -100, -1e6,
+      ]) {
+        fromComponents.push(FC(sign, layer, mag));
+      }
+    }
+  }
+
+  return [...fromNumbers, ...fromComponents];
+}
+
+const POWER_CURATED = powerCuratedValues();
+
+/** Curated inputs shared by every milestone-2 unary op. */
+const M2_VALUES = [...CURATED, ...POWER_CURATED];
+
+/** Random-draw pool shared by every milestone-2 op. */
+const M2_POOL = [...POOL, ...POWER_CURATED];
+
+/**
+ * The *exponent* side of pow / root / powBase. Random layer-6 monsters make
+ * every result overflow to infinity, so exponents get their own pool: small
+ * integers (odd and even, which decide the sign of a negative base raised to
+ * them), simple fractions, the layer boundaries, and only a handful of towers.
+ */
+function exponentValues() {
+  const fromNumbers = [
+    0, 1, -1, 2, -2, 3, -3, 4, -4, 5, 6, 7, 8, 10, -10, 100, -100,
+    0.5, -0.5, 1 / 3, -1 / 3, 2 / 3, 1.5, -1.5, 2.5, 3.5, 0.1, -0.1,
+    1e3, 1e6, 1e15, EXP_LIMIT, EXP_LIMIT + 2, 1e16, -1e15, 1e-3, 1e-15,
+    FIRST_NEG_LAYER, LAYER_DOWN, -LAYER_DOWN,
+    Infinity, -Infinity, NaN,
+  ].map((n) => new Decimal(n));
+
+  const fromComponents = [];
+  for (const sign of [1, -1]) {
+    for (const layer of [1, 2, 3]) {
+      for (const mag of [16, 20, 100, 1e6, -20]) {
+        fromComponents.push(FC(sign, layer, mag));
+      }
+    }
+  }
+
+  return [...fromNumbers, ...fromComponents];
+}
+
+const EXPONENTS = exponentValues();
+
+/**
+ * The *base* side of log(value, base). Base 1 and any nonpositive base are NaN
+ * in the reference, and bases barely above 1 are the numerically delicate ones.
+ */
+function logBaseValues() {
+  const fromNumbers = [
+    0, 1, -1, -2, 2, 3, Math.E, 10, 100, 1e6, 1e15, 1e16, 1e100, 1e308,
+    0.5, 0.1, 1e-6, 1e-100, 1 + 1e-9, 1 - 1e-9, 1.0000001, 0.9999999,
+    Infinity, -Infinity, NaN,
+  ].map((n) => new Decimal(n));
+
+  const fromComponents = [];
+  for (const sign of [1, -1]) {
+    for (const layer of [1, 2, 3]) {
+      for (const mag of [16, 100, 1e6, -100]) {
+        fromComponents.push(FC(sign, layer, mag));
+      }
+    }
+  }
+
+  return [...fromNumbers, ...fromComponents];
+}
+
+const LOG_BASES = logBaseValues();
+
+/** Every curated value, then `count` seeded draws from `pool`. */
+function unaryCasesOver(op, fn, values, pool, count) {
+  const rng = mulberry32(seedFor(op));
+  const cases = [];
+  for (const a of values) {
+    cases.push({ a: triple(a), r: triple(fn(a)) });
+  }
+  for (let i = 0; i < count; i++) {
+    const a = pool[Math.floor(rng() * pool.length)];
+    cases.push({ a: triple(a), r: triple(fn(a)) });
+  }
+  return cases;
+}
+
+/**
+ * Binary cases where the two operands come from *different* pools (a value and
+ * an exponent, or a value and a logarithm base). Mirrors `binaryCases`: a
+ * strided cross-section of the curated lists, then seeded random pairs.
+ */
+function binaryCasesOver(op, fn, aValues, aPool, bValues, bPool, count) {
+  const rng = mulberry32(seedFor(op));
+  const cases = [];
+
+  const stride = 17;
+  for (let i = 0; i < aValues.length; i++) {
+    for (let j = (i * 5) % stride; j < bValues.length; j += stride) {
+      const a = aValues[i];
+      const b = bValues[j];
+      cases.push({ a: triple(a), b: triple(b), r: triple(fn(a, b)) });
+    }
+  }
+
+  for (let i = 0; i < count; i++) {
+    const a = rng() < 0.4
+      ? aValues[Math.floor(rng() * aValues.length)]
+      : aPool[Math.floor(rng() * aPool.length)];
+    const b = rng() < 0.6
+      ? bValues[Math.floor(rng() * bValues.length)]
+      : bPool[Math.floor(rng() * bPool.length)];
+    cases.push({ a: triple(a), b: triple(b), r: triple(fn(a, b)) });
+  }
+
+  return cases;
+}
+
+// ---------------------------------------------------------------------------
+// Milestone 2: the incremental-game series helpers (n-ary, "args" shape).
+// ---------------------------------------------------------------------------
+
+const D_ = (n) => new Decimal(n);
+
+/** Money-ish amounts: what a save file actually holds. */
+const RESOURCES = [
+  0, 1, 10, 100, 1e3, 1e6, 1e9, 1e12, 1e15, 1e18, 1e30, 1e100, 1e308,
+  0.5, 1e-6, -1, -1e6, Infinity, NaN,
+].map(D_).concat([
+  FC(1, 1, 20), FC(1, 1, 1e3), FC(1, 2, 20), FC(1, 3, 100), FC(-1, 1, 20),
+]);
+
+/** Opening price of the first unit. */
+const PRICE_STARTS = [
+  1, 2, 10, 15, 100, 1e3, 1e6, 1e15, 1e100, 0.5, 0, -10, Infinity, NaN,
+].map(D_).concat([FC(1, 1, 20), FC(1, 2, 20)]);
+
+/**
+ * Cost multiplier per purchase. 1 exactly makes the closed form divide by
+ * `log10(1) == 0`; ratios a hair above 1 are where the geometric series is
+ * numerically delicate; ratios below 1 make the cost *fall*.
+ */
+const PRICE_RATIOS = [
+  1, 1.0000001, 1 + 1e-12, 1.00001, 1.01, 1.07, 1.1, 1.15, 1.5, 2, 3, 10,
+  1e3, 1e15, 1e100, 0.5, 0.9999999, 0.9, 0, -2, Infinity, NaN,
+].map(D_).concat([FC(1, 1, 20), FC(1, 2, 20)]);
+
+/** Cost increment per purchase, for the arithmetic series. */
+const PRICE_ADDS = [
+  0, 1, 2, 10, 100, 1e3, 1e6, 1e15, 1e100, -5, 0.5, 1e-9, Infinity, NaN,
+].map(D_).concat([FC(1, 1, 20), FC(1, 2, 20)]);
+
+/** How many you already own — often huge in a long-running save. */
+const CURRENT_OWNED = [
+  0, 1, 2, 10, 100, 1e3, 1e6, 1e15, 1e100, -1, -10, 0.5, NaN,
+].map(D_).concat([FC(1, 1, 20), FC(1, 2, 20)]);
+
+/** How many you are asking to buy. */
+const NUM_ITEMS = [
+  0, 1, 2, 10, 100, 1e3, 1e6, 1e15, 1e100, -1, 0.5, 1e-6, Infinity, NaN,
+].map(D_).concat([FC(1, 1, 20), FC(1, 2, 20)]);
+
+/** Production rates for efficiencyOfPurchase. */
+const RATES = [
+  0, 1, 10, 1e3, 1e6, 1e15, 1e100, 0.5, 1e-6, -1, -1e6, Infinity, NaN,
+].map(D_).concat([FC(1, 1, 20), FC(1, 2, 20), FC(-1, 1, 20)]);
+
+function gcd(a, b) {
+  while (b !== 0) [a, b] = [b, a % b];
+  return a;
+}
+
+/**
+ * A stride that walks every element of a `len`-long list exactly once per
+ * `len` steps (i.e. coprime with `len`), starting from the hint.
+ */
+function coprimeStride(len, hint) {
+  let s = ((hint % len) + len) % len;
+  if (s === 0) s = 1;
+  for (let i = 0; i < len; i++) {
+    const candidate = ((s + i - 1) % len) + 1;
+    if (gcd(candidate, len) === 1) return candidate;
+  }
+  return 1;
+}
+
+/**
+ * Enumerates argument tuples for an n-ary op. Each parameter walks its own pool
+ * with a coprime stride, so `sweep` steps cover every value of every pool many
+ * times over while never repeating the same combination early; then `count`
+ * seeded random tuples are appended, occasionally reaching into the general
+ * Decimal pool for genuinely adversarial inputs.
+ */
+function naryCases(op, fn, pools, sweep, count, focus = []) {
+  const rng = mulberry32(seedFor(op));
+  const cases = [];
+  const push = (args) => {
+    cases.push({ args: args.map(triple), r: triple(fn(...args)) });
+  };
+
+  for (const args of focus) push(args);
+
+  const strides = pools.map((p, k) => coprimeStride(p.length, 1 + k * 4));
+  for (let i = 0; i < sweep; i++) {
+    push(pools.map((p, k) => p[(i * strides[k]) % p.length]));
+  }
+
+  for (let i = 0; i < count; i++) {
+    push(pools.map((p) => (rng() < 0.9
+      ? p[Math.floor(rng() * p.length)]
+      : M2_POOL[Math.floor(rng() * M2_POOL.length)])));
+  }
+
+  return cases;
+}
+
+/**
+ * The geometric helpers are at their most fragile when priceRatio sits on or
+ * next to 1, so those ratios are crossed exhaustively with a handful of
+ * plausible (amount, priceStart, currentOwned) triples rather than being left
+ * to the sweep.
+ */
+function geometricFocus() {
+  const ratios = [1, 1.0000001, 1 + 1e-12, 1 + 1e-15, 0.9999999, 1.07].map(D_);
+  const rest = [
+    [D_(0), D_(10), D_(0)],
+    [D_(1), D_(10), D_(0)],
+    [D_(1e6), D_(10), D_(0)],
+    [D_(1e100), D_(10), D_(1e15)],
+    [D_(1e308), D_(1e100), D_(1e100)],
+    [FC(1, 1, 20), D_(10), FC(1, 1, 20)],
+    [D_(-100), D_(10), D_(5)],
+    [D_(1e15), D_(0.5), D_(1e6)],
+  ];
+  const out = [];
+  for (const r of ratios) {
+    for (const [amount, start, owned] of rest) {
+      out.push([amount, start, r, owned]);
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // Ops
 // ---------------------------------------------------------------------------
 
@@ -304,10 +598,82 @@ const BINARY = {
   mod: (a, b) => a.mod(b),
 };
 
+// --- Milestone 2 -----------------------------------------------------------
+
+/** Unary logs, powers and roots. Same {a, r} shape as the milestone-1 unaries. */
+const M2_UNARY = {
+  log10: (a) => a.log10(),
+  absLog10: (a) => a.absLog10(),
+  pLog10: (a) => a.pLog10(),
+  log2: (a) => a.log2(),
+  ln: (a) => a.ln(),
+  // pow10 is the inverse of log10 and the step every power and root lands on,
+  // so it gets its own file rather than being covered only through `pow`: the
+  // exact-power-of-ten lookup table is on this path and nowhere else.
+  pow10: (a) => a.pow10(),
+  sqr: (a) => a.sqr(),
+  cube: (a) => a.cube(),
+  sqrt: (a) => a.sqrt(),
+  cbrt: (a) => a.cbrt(),
+  exp: (a) => a.exp(),
+};
+
+/**
+ * Binary logs, powers and roots. Each entry names the pool the *second* operand
+ * is drawn from, because a uniformly random layer-6 exponent would send nearly
+ * every result to infinity.
+ *
+ * `powBase` is the reference's `pow_base`: `a.powBase(b)` is b^a, so `a` is the
+ * exponent and `b` is the base — the pools are swapped accordingly.
+ */
+const M2_BINARY = {
+  log: { fn: (a, b) => a.log(b), aValues: M2_VALUES, bValues: LOG_BASES },
+  pow: { fn: (a, b) => a.pow(b), aValues: M2_VALUES, bValues: EXPONENTS },
+  root: { fn: (a, b) => a.root(b), aValues: M2_VALUES, bValues: EXPONENTS },
+  powBase: {
+    fn: (a, b) => a.pow_base(b),
+    aValues: EXPONENTS,
+    bValues: M2_VALUES,
+    aPool: EXPONENTS,
+    bPool: M2_POOL,
+  },
+};
+
+/**
+ * The series helpers, in the reference's argument order. `pools[k]` is the pool
+ * argument k is drawn from; see the "args" documentation at the top of the file.
+ */
+const M2_SERIES = {
+  affordGeometricSeries: {
+    fn: (r, s, ratio, owned) => Decimal.affordGeometricSeries(r, s, ratio, owned),
+    pools: [RESOURCES, PRICE_STARTS, PRICE_RATIOS, CURRENT_OWNED],
+    focus: geometricFocus(),
+  },
+  sumGeometricSeries: {
+    fn: (n, s, ratio, owned) => Decimal.sumGeometricSeries(n, s, ratio, owned),
+    pools: [NUM_ITEMS, PRICE_STARTS, PRICE_RATIOS, CURRENT_OWNED],
+    focus: geometricFocus(),
+  },
+  affordArithmeticSeries: {
+    fn: (r, s, add, owned) => Decimal.affordArithmeticSeries(r, s, add, owned),
+    pools: [RESOURCES, PRICE_STARTS, PRICE_ADDS, CURRENT_OWNED],
+  },
+  sumArithmeticSeries: {
+    fn: (n, s, add, owned) => Decimal.sumArithmeticSeries(n, s, add, owned),
+    pools: [NUM_ITEMS, PRICE_STARTS, PRICE_ADDS, CURRENT_OWNED],
+  },
+  efficiencyOfPurchase: {
+    fn: (cost, rps, delta) => Decimal.efficiencyOfPurchase(cost, rps, delta),
+    pools: [RESOURCES, RATES, RATES],
+  },
+};
+
 function write(op, cases) {
   const body = cases
     .map((c) => {
-      const parts = [`"a":${JSON.stringify(c.a)}`];
+      const parts = [];
+      if (c.args) parts.push(`"args":${JSON.stringify(c.args)}`);
+      else parts.push(`"a":${JSON.stringify(c.a)}`);
       if (c.b) parts.push(`"b":${JSON.stringify(c.b)}`);
       parts.push(`"r":${JSON.stringify(c.r)}`);
       if (c.c !== undefined) parts.push(`"c":${JSON.stringify(enc(c.c))}`);
@@ -340,8 +706,34 @@ function main() {
 
   counts.normalize = write('normalize', normalizeCases(N));
 
+  // --- Milestone 2 ---------------------------------------------------------
+
+  for (const [op, fn] of Object.entries(M2_UNARY)) {
+    counts[op] = write(op, unaryCasesOver(op, fn, M2_VALUES, M2_POOL, N));
+  }
+
+  for (const [op, spec] of Object.entries(M2_BINARY)) {
+    counts[op] = write(op, binaryCasesOver(
+      op,
+      spec.fn,
+      spec.aValues,
+      spec.aPool ?? M2_POOL,
+      spec.bValues,
+      spec.bPool ?? spec.bValues,
+      N,
+    ));
+  }
+
+  for (const [op, spec] of Object.entries(M2_SERIES)) {
+    counts[op] = write(
+      op,
+      naryCases(op, spec.fn, spec.pools, 220, 180, spec.focus ?? []),
+    );
+  }
+
+  const width = Math.max(...Object.keys(counts).map((k) => k.length));
   for (const op of Object.keys(counts).sort()) {
-    process.stdout.write(`${op.padEnd(10)} ${counts[op]}\n`);
+    process.stdout.write(`${op.padEnd(width)} ${counts[op]}\n`);
   }
 }
 

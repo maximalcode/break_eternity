@@ -19,7 +19,9 @@
 /// order of magnitude above the measured worst case, which is loose enough to
 /// absorb the representation error and far too tight to hide a real bug (a
 /// real bug in this code shows up as a wrong factor or a wrong exponent, not
-/// as a wrong 13th digit).
+/// as a wrong 13th digit). [_powerTolerance] is two orders looser again, for
+/// the operations that reach their answer through `log10` and `pow10` rather
+/// than by multiplying; it is measured the same way.
 ///
 /// Where the port *is* exact, that is asserted exactly: see the
 /// "bit-exact" group, which pins every pair whose operands survive the round
@@ -100,12 +102,84 @@ const List<double> _layerZeroSpread = <double>[
   -0.25,
 ];
 
+/// Exponents spanning the whole range over which `math.exp` is trustworthy.
+///
+/// [_all] is a poor value set for [Decimal.exp]: `e ^ 1e30` overflows a
+/// `double` long before it troubles a `Decimal`, so every one of its large
+/// members skips and what is left is a cluster around 1. These do not skip.
+/// The range starts at -700, where `math.exp` is 9.9e-305 — the smallest
+/// result still normal enough that a `double` carries full precision — and
+/// stops at 710, the first entry that overflows. In between it straddles
+/// 709.7, which is the reference's own cutoff between "hand it to `Math.exp`"
+/// and "build the answer in log space", so both branches of [Decimal.exp] are
+/// exercised against a `double` that can still hold the answer.
+const List<double> _expSpread = <double>[
+  -700,
+  -100,
+  -10,
+  -2,
+  -1,
+  -0.5,
+  -0.1,
+  0,
+  0.1,
+  0.5,
+  1,
+  2,
+  10,
+  100,
+  700,
+  709.7,
+  709.78,
+  710,
+];
+
+/// Radicands for the supplementary `root` group, paired with [_rootDegrees].
+///
+/// Deliberately heavy on negatives, and on negatives at more than one layer:
+/// the rule that a negative radicand survives an odd-integer degree is the one
+/// thing `root` does that `pow` does not, and [_all] cannot reach it, because
+/// its only odd-integer members are 1 and -1 and `pow` gets those right on its
+/// own (see [_isOddInteger]).
+const List<double> _rootRadicands = <double>[
+  -1e30,
+  -8,
+  -2,
+  -1.1,
+  0,
+  0.5,
+  2,
+  8,
+  1e30,
+  7.23e222,
+];
+
+/// Degrees for the supplementary `root` group.
+///
+/// Odd and even integers of both signs, so the parity rule is exercised in
+/// every combination, plus two non-integers to pin the boundary: a negative
+/// radicand under 0.5 is legal (it is a squaring), under 1.5 it is not.
+const List<double> _rootDegrees = <double>[1, 2, 3, 4, 5, -1, -2, -3, 0.5, 1.5];
+
 // ---------------------------------------------------------------------------
 // Tolerances
 // ---------------------------------------------------------------------------
 
 /// Relative tolerance for arithmetic, ~13x the measured worst case of 7.8e-14.
 const double _arithmeticTolerance = 1e-12;
+
+/// Relative tolerance for the operations that go through `log10` and `pow10`.
+///
+/// [Decimal.pow] and everything built on it do not multiply: they take a
+/// logarithm, scale it, and exponentiate. That costs about two decimal digits,
+/// because an absolute error of `d` in a base-10 exponent becomes a relative
+/// error of `10^d - 1` in the answer, and the exponent of a value like
+/// `7.23e222` is only known to about 1e-14 in the first place. Measured over
+/// the value set below the worst disagreement is 3.3e-13, at
+/// `7.23e222 ^ -1.1`; this sits about 30x above that. It is still far too
+/// tight to hide a wrong constant, a wrong branch or a dropped sign, which is
+/// what a real bug in these methods looks like.
+const double _powerTolerance = 1e-11;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -171,6 +245,52 @@ void _expectClose(
         '  relative error ${error.toStringAsExponential(3)} exceeds '
         '${_formatTolerance(tolerance)}',
   );
+}
+
+/// Compares one case, either as a number or as a shared domain error.
+///
+/// When [domainError] is set, the caller has declared that this input has no
+/// answer at all — `log10(-1)`, `(-1.1) ^ 0.5` — and that both sides say so.
+/// Two things are then asserted: that the `double` oracle really is NaN (which
+/// keeps the caller's predicate honest, so a mistake in it shows up as a
+/// failure rather than as a silently weakened test), and that the `Decimal` is
+/// NaN too. Otherwise this is [_expectClose] on `toDouble()`.
+void _expectMatch(
+  Decimal got,
+  double want,
+  double tolerance,
+  String what,
+  bool domainError,
+) {
+  if (domainError) {
+    expect(
+      want.isNaN,
+      isTrue,
+      reason:
+          '$what\n  the oracle claims a domain error, but double says $want',
+    );
+    expect(
+      got.isNaN,
+      isTrue,
+      reason: '$what\n  double is NaN, so Decimal must be NaN, but it is $got',
+    );
+    return;
+  }
+  _expectClose(got.toDouble(), want, tolerance, what);
+}
+
+/// `, 17 of 18 cases live`, for a group that skips enough to be worth counting.
+///
+/// Only asked for where the skips are the interesting part — [Decimal.exp]
+/// overflows a `double` almost immediately, so without this a reader has no
+/// way to tell a thorough group from an empty one at a glance. Counted rather
+/// than written down, so it cannot go stale when the value set changes.
+String _liveCountSuffix(List<Object?> skips, bool announce) {
+  if (!announce) {
+    return '';
+  }
+  final int live = skips.where((Object? skip) => skip == null).length;
+  return ', $live of ${skips.length} cases live';
 }
 
 /// Why this case cannot be judged against `double`, or `null` if it can.
@@ -245,6 +365,165 @@ bool _tripsCmpAbsZeroBug(double a, double b) {
   return (da.isZero && db.mag < 0) || (db.isZero && da.mag < 0);
 }
 
+/// Whether the logarithm of [a] is a domain error on both sides.
+///
+/// Every logarithm here is real-valued, so a negative argument is not a
+/// limitation of `double` — it is a question with no answer: `math.log`
+/// returns NaN and the reference returns [Decimal.nan]. That agreement is
+/// asserted rather than skipped, because a port that returned some number for
+/// `log10(-1)` would otherwise slip through disguised as a skip. NaN in, NaN
+/// out for the same reason.
+///
+/// Zero is deliberately absent. `log10(0)` is `-Infinity` in IEEE and
+/// [Decimal.nan] here (the reference gives up on `sign <= 0` as a whole), so
+/// the two are not comparable and the case skips as an overflow.
+bool _logDomainError(double a) => a.isNaN || a < 0;
+
+/// Refuses `log(base)` cases whose base makes the double oracle meaningless.
+///
+/// A base of zero or one has no logarithm to speak of, and [Decimal.log] says
+/// so with [Decimal.nan] — both are special-cased in the reference. The oracle
+/// cannot say so, because it is a ratio: it divides by `log(0) == -Infinity`
+/// and gets a signed zero, or by `log(1) == 0` and gets an infinity. Neither
+/// disagreement is about the port.
+String? _logBaseGuard(double a, double b) {
+  if (b == 0) {
+    return 'a base of zero is NaN in Decimal, while the double oracle divides '
+        'by log(0) == -Infinity and returns a signed zero';
+  }
+  if (b == 1) {
+    return 'a base of one has no logarithm (every power of 1 is 1): Decimal '
+        'returns NaN, while the double oracle divides by log(1) == 0';
+  }
+  // Above layer 0, `log(base)` is `log10() / base.log10()`, and a `Decimal`
+  // quotient involving an infinity comes back as that infinity whatever the
+  // other operand is — `Decimal.infinity / Decimal.nan` is `Infinity`, not NaN.
+  // So an infinite value swallows a base it should have choked on. The
+  // negatives never get this far (`log` rejects a negative base outright), so
+  // the only base left that a `double` would propagate is NaN.
+  // break_eternity.js 2.1.3 answers `Infinity` here as well.
+  if (a == double.infinity && !b.isFinite) {
+    return 'an infinite value makes log10() infinite, and a Decimal quotient '
+        'involving an infinity is that infinity regardless of the other '
+        'operand, so the base is never consulted';
+  }
+  return null;
+}
+
+/// Refuses `pow` and `root` cases with a non-finite operand.
+///
+/// [Decimal.pow] is `10 ^ (log10(|a|) * b)` — a logarithm, a multiplication and
+/// an exponentiation, none of which consults IEEE's table of special cases for
+/// infinite arguments. The multiplication is the interesting one: a `Decimal`
+/// product involving an infinity takes the sign of the *infinity* and drops the
+/// other factor's, so `Decimal.fromNum(-0.5) * Decimal.infinity` is
+/// `+Infinity`. Downstream of that, `0.9.dec.pow(Decimal.infinity)` is
+/// `Infinity` where `math.pow(0.9, double.infinity)` is 0, and
+/// `Decimal.infinity.pow((-1).dec)` is `Infinity` where `math.pow(inf, -1)` is
+/// 0.
+///
+/// break_eternity.js 2.1.3 answers identically on all of them, so the port is
+/// correct as specified and the oracle is the one that has to stand aside; the
+/// JavaScript-generated fixtures pin the actual values.
+String? _powNonFiniteGuard(double a, double b) => a.isFinite && b.isFinite
+    ? null
+    : 'pow goes through log10, multiplication and pow10, and a Decimal product '
+          'involving an infinity keeps the sign of the infinity rather than of '
+          'the product, so the IEEE special cases for infinite arguments are '
+          'not reproduced here (nor are they upstream)';
+
+/// Whether `a ^ b` is a domain error on both sides.
+///
+/// A negative base has no real power at a non-integer exponent: `math.pow`
+/// returns NaN, and [Decimal.pow] returns [Decimal.nan] once it finds the
+/// exponent's parity is neither 0 nor 1. Both sides mean it, so it is asserted.
+/// Only finite operands reach here — [_powNonFiniteGuard] has taken the rest.
+bool _powDomainError(double a, double b) =>
+    a < 0 && b.isFinite && b != b.roundToDouble();
+
+/// Whether [value] is an odd integer, the degrees at which a negative radicand
+/// still has a real root.
+///
+/// Mirrors the reference's `mod(2, floored: true) == 1` test, which
+/// [Decimal.root] uses to decide whether to take the root of the magnitude and
+/// put the sign back. The floored and truncated moduli disagree on the sign of
+/// the answer for a negative operand but not on its magnitude, so taking the
+/// absolute value of `remainder` gets to the same place.
+bool _isOddInteger(double value) =>
+    value.isFinite &&
+    value == value.roundToDouble() &&
+    value.remainder(2).abs() == 1;
+
+/// `a` to the power `1 / b`, with the odd-root rule IEEE `pow` does not have.
+///
+/// `math.pow` refuses every negative base at a non-integer exponent, so it
+/// calls `math.pow(-8, 1 / 3)` NaN — but -8 does have a real cube root, and
+/// both [Decimal.root] and ordinary mathematics say it is -2. The oracle has to
+/// do the same thing [Decimal.root] does: take the root of the magnitude and
+/// put the sign back. It is not circular to compute the oracle this way —
+/// `math.pow` still does all the arithmetic, and the identity being asserted
+/// (`(-x).root(odd) == -(x.root(odd))`) is a fact about roots, not a copy of
+/// the implementation.
+double _rootOracle(double a, double b) => a < 0 && _isOddInteger(b)
+    ? -math.pow(-a, 1 / b).toDouble()
+    : math.pow(a, 1 / b).toDouble();
+
+/// Whether `a.root(b)` is a domain error on both sides.
+///
+/// A negative radicand has no real root at an even-integer or fractional
+/// degree, and neither side pretends otherwise. The odd-integer degrees are
+/// excluded because those are precisely the ones that do have an answer.
+bool _rootDomainError(double a, double b) =>
+    !_isOddInteger(b) && _powDomainError(a, 1 / b);
+
+/// Refuses `root` cases with a degree of zero, then defers to [_powNonFiniteGuard].
+///
+/// `a.root(b)` is `a.pow(1 / b)`, and `Decimal.zero.reciprocal()` is
+/// [Decimal.nan] rather than infinity — a documented divergence of its own —
+/// so every zeroth root is NaN here. The oracle instead raises to the power
+/// `1 / 0 == Infinity` and gets 0, 1 or infinity depending on the radicand.
+String? _rootGuard(double a, double b) => b == 0
+    ? 'a zeroth root raises to the power of the reciprocal of zero, which is '
+          'NaN in Decimal rather than infinity, so the answer is NaN while the '
+          'double oracle raises to the power of Infinity'
+    : _powNonFiniteGuard(a, b);
+
+/// Refuses `sqrt` cases the reference does not answer sensibly.
+///
+/// [Decimal.sqrt] dispatches on [Decimal.layer], and only the layer-0 branch
+/// goes through `math.sqrt`; the others manipulate the magnitude directly and
+/// never look at the sign or check that the magnitude is positive. So the
+/// square root of anything below `1/9e15` takes `log10` of a negative `mag` and
+/// comes out NaN, and the square root of a negative above `9e15` comes out as a
+/// perfectly confident number. break_eternity.js 2.1.3 agrees on both
+/// (`new Decimal(1e-30).sqrt()` is NaN there too), so these are skipped rather
+/// than accommodated, and the fixtures record what the reference actually says.
+String? _sqrtGuard(double a) {
+  final Decimal d = a.dec;
+  if (d.layer > 0 && d.mag < 0) {
+    return 'upstream break_eternity.js bug: sqrt() at layer 1 evaluates '
+        'log10(mag), and the mag of a value below 1/9e15 is negative, so the '
+        'answer is NaN';
+  }
+  if (d.layer > 0 && d.sign < 0) {
+    return 'upstream break_eternity.js bug: sqrt() only consults the sign at '
+        'layer 0, so the square root of a negative above 9e15 is a number '
+        'rather than NaN';
+  }
+  return null;
+}
+
+/// Refuses `exp` of negative infinity.
+///
+/// [Decimal.exp] dispatches on [Decimal.layer] too, and [Decimal.negativeInfinity]
+/// is `sign == -1` at an infinite layer, so it lands in the layer-2+ branch:
+/// that adds a layer and hands back an infinity, making `e ^ -Infinity` come
+/// out as `Infinity` instead of 0. break_eternity.js 2.1.3 does the same.
+String? _expGuard(double a) => a == double.negativeInfinity
+    ? 'Decimal.exp() dispatches on layer, and -Infinity lands in the layer-2+ '
+          'branch, so it returns Infinity where the double oracle returns 0'
+    : null;
+
 /// Runs [onDecimal] and [onDouble] over every value in [values].
 void _unaryGroup({
   required String title,
@@ -254,23 +533,44 @@ void _unaryGroup({
   double tolerance = _arithmeticTolerance,
   List<double> values = _all,
   bool Function(double a)? zeroIsGenuine,
+  bool Function(double a)? nanIsGenuine,
   String? Function(double a)? guard,
+  bool announceLiveCount = false,
 }) {
-  group('$title (relative tolerance ${_formatTolerance(tolerance)})', () {
-    for (final double a in values) {
-      final String name = label(_label(a));
-      final double want = onDouble(a);
-      final Object? skip =
-          guard?.call(a) ??
-          _skipReason(want, zeroIsGenuine: zeroIsGenuine?.call(a) ?? true);
-      test(name, () {
-        _expectClose(onDecimal(a.dec).toDouble(), want, tolerance, name);
-      }, skip: skip);
-    }
-  });
+  final List<Object?> skips = <Object?>[
+    for (final double a in values)
+      guard?.call(a) ??
+          ((nanIsGenuine?.call(a) ?? false)
+              ? null
+              : _skipReason(
+                  onDouble(a),
+                  zeroIsGenuine: zeroIsGenuine?.call(a) ?? true,
+                )),
+  ];
+  final String suffix = _liveCountSuffix(skips, announceLiveCount);
+
+  group(
+    '$title (relative tolerance ${_formatTolerance(tolerance)}$suffix)',
+    () {
+      for (int i = 0; i < values.length; i++) {
+        final double a = values[i];
+        final String name = label(_label(a));
+        final double want = onDouble(a);
+        final bool domainError = nanIsGenuine?.call(a) ?? false;
+        test(name, () {
+          _expectMatch(onDecimal(a.dec), want, tolerance, name, domainError);
+        }, skip: skips[i]);
+      }
+    },
+  );
 }
 
 /// Runs [onDecimal] and [onDouble] over every ordered pair from [values].
+///
+/// The right-hand operand comes from [rightValues] when the two sides want
+/// different value sets — an exponent or a degree is a different kind of thing
+/// from the number it applies to, and useful ones (3, 4, 5) are not useful
+/// magnitudes.
 void _binaryGroup({
   required String title,
   required String symbol,
@@ -278,28 +578,49 @@ void _binaryGroup({
   required _BinaryDoubleOp onDouble,
   double tolerance = _arithmeticTolerance,
   List<double> values = _all,
+  List<double>? rightValues,
   bool Function(double a, double b)? zeroIsGenuine,
+  bool Function(double a, double b)? nanIsGenuine,
   String? Function(double a, double b)? guard,
+  bool announceLiveCount = false,
 }) {
-  group('$title (relative tolerance ${_formatTolerance(tolerance)})', () {
-    for (final double a in values) {
-      for (final double b in values) {
-        final String name = '${_label(a)} $symbol ${_label(b)}';
-        final double want = onDouble(a, b);
-        final Object? skip =
-            guard?.call(a, b) ??
-            _skipReason(want, zeroIsGenuine: zeroIsGenuine?.call(a, b) ?? true);
-        test(name, () {
-          _expectClose(
-            onDecimal(a.dec, b.dec).toDouble(),
-            want,
-            tolerance,
-            name,
-          );
-        }, skip: skip);
+  final List<double> rights = rightValues ?? values;
+  final List<Object?> skips = <Object?>[
+    for (final double a in values)
+      for (final double b in rights)
+        guard?.call(a, b) ??
+            ((nanIsGenuine?.call(a, b) ?? false)
+                ? null
+                : _skipReason(
+                    onDouble(a, b),
+                    zeroIsGenuine: zeroIsGenuine?.call(a, b) ?? true,
+                  )),
+  ];
+  final String suffix = _liveCountSuffix(skips, announceLiveCount);
+
+  group(
+    '$title (relative tolerance ${_formatTolerance(tolerance)}$suffix)',
+    () {
+      int i = 0;
+      for (final double a in values) {
+        for (final double b in rights) {
+          final String name = '${_label(a)} $symbol ${_label(b)}';
+          final double want = onDouble(a, b);
+          final bool domainError = nanIsGenuine?.call(a, b) ?? false;
+          final Object? skip = skips[i++];
+          test(name, () {
+            _expectMatch(
+              onDecimal(a.dec, b.dec),
+              want,
+              tolerance,
+              name,
+              domainError,
+            );
+          }, skip: skip);
+        }
       }
-    }
-  });
+    },
+  );
 }
 
 void main() {
@@ -636,4 +957,201 @@ void main() {
       }
     }
   });
+
+  // -------------------------------------------------------------------------
+  // Logarithms
+  // -------------------------------------------------------------------------
+
+  // `dart:math` offers only a natural logarithm, so the oracle for the other
+  // two bases is a division by `ln10`/`ln2`. For [Decimal.log10] and
+  // [Decimal.log2] that is a genuinely independent computation — both go
+  // through the software `log10` in `constants.dart`, a Sun-derived
+  // `__ieee754_log10` carried so the port normalises identically on the VM and
+  // in the browser — so the agreement below is evidence rather than a
+  // restatement. [Decimal.ln] is the exception: at layer 0 it calls the same
+  // `math.log` the oracle does, so those cases test the plumbing around it
+  // (sign, normalisation, the round trip) and not the transcendental. Its
+  // layer-1 cases, which reach the answer as `mag * ln(10)`, are independent
+  // again.
+  //
+  // Above layer 0 a logarithm is not a computation at all — it is a decrement
+  // of `layer` — so these groups are really two tests in one: the numeric
+  // kernel at layer 0, and the bookkeeping that peels a layer off `1e30` and
+  // `7.23e222` and lands on the right side of the layer boundary. Layer 2 and
+  // up are out of reach here by construction, since no `double` can name an
+  // input that reaches them; those branches belong to the fixtures.
+
+  _unaryGroup(
+    title: 'log10',
+    label: (String a) => '$a.log10()',
+    onDecimal: (Decimal a) => a.log10(),
+    onDouble: (double a) => math.log(a) / math.ln10,
+    nanIsGenuine: _logDomainError,
+  );
+
+  _unaryGroup(
+    title: 'log2',
+    label: (String a) => '$a.log2()',
+    onDecimal: (Decimal a) => a.log2(),
+    onDouble: (double a) => math.log(a) / math.ln2,
+    nanIsGenuine: _logDomainError,
+  );
+
+  _unaryGroup(
+    title: 'ln',
+    label: (String a) => '$a.ln()',
+    onDecimal: (Decimal a) => a.ln(),
+    onDouble: (double a) => math.log(a),
+    nanIsGenuine: _logDomainError,
+  );
+
+  // A logarithm in an arbitrary base is a ratio of logarithms on both sides,
+  // so the two agree to within a rounding error wherever the base is one a
+  // logarithm can have at all: [_logBaseGuard] takes 0 and 1, and everything
+  // negative on either side is a shared domain error and asserted as one.
+  _binaryGroup(
+    title: 'log(base)',
+    symbol: 'log base',
+    onDecimal: (Decimal a, Decimal b) => a.log(b),
+    onDouble: (double a, double b) => math.log(a) / math.log(b),
+    nanIsGenuine: (double a, double b) =>
+        _logDomainError(a) || _logDomainError(b),
+    guard: _logBaseGuard,
+    announceLiveCount: true,
+  );
+
+  // -------------------------------------------------------------------------
+  // Powers and roots
+  // -------------------------------------------------------------------------
+
+  _binaryGroup(
+    title: 'pow',
+    symbol: '^',
+    onDecimal: (Decimal a, Decimal b) => a.pow(b),
+    onDouble: (double a, double b) => math.pow(a, b).toDouble(),
+    tolerance: _powerTolerance,
+    // A power is zero only when the base is: `0 ^ b` for positive `b`. Every
+    // other zero here is a `double` giving up (`0.5 ^ 7.23e222`), which is the
+    // case a `Decimal` exists to handle and so is nothing to compare against.
+    // (`0 ^ negative` is infinity in IEEE and zero here, and skips as an
+    // overflow of the oracle.)
+    zeroIsGenuine: (double a, double b) => a == 0,
+    nanIsGenuine: _powDomainError,
+    guard: _powNonFiniteGuard,
+    announceLiveCount: true,
+  );
+
+  // `root` is `pow` of a reciprocal, plus one rule of its own: a negative
+  // radicand keeps its sign under an odd-integer degree instead of going NaN,
+  // because the real cube root of -8 is -2. See [_rootOracle], which is where
+  // that rule lives on the oracle's side.
+  _binaryGroup(
+    title: 'root',
+    symbol: 'root',
+    onDecimal: (Decimal a, Decimal b) => a.root(b),
+    onDouble: _rootOracle,
+    tolerance: _powerTolerance,
+    zeroIsGenuine: (double a, double b) => a == 0,
+    nanIsGenuine: _rootDomainError,
+    guard: _rootGuard,
+    announceLiveCount: true,
+  );
+
+  // [_all] holds no odd integer bigger than 1, so the group above never
+  // actually reaches the odd-degree rule: at a degree of 1 or -1 the exponent
+  // `1 / degree` is an integer, and `pow` already handles a negative base at an
+  // integer exponent by itself, so deleting the rule outright would not change
+  // a single answer up there. These degrees do reach it.
+  _binaryGroup(
+    title: 'root over integer degrees',
+    symbol: 'root',
+    onDecimal: (Decimal a, Decimal b) => a.root(b),
+    onDouble: _rootOracle,
+    tolerance: _powerTolerance,
+    values: _rootRadicands,
+    rightValues: _rootDegrees,
+    zeroIsGenuine: (double a, double b) => a == 0,
+    nanIsGenuine: _rootDomainError,
+    guard: _rootGuard,
+    announceLiveCount: true,
+  );
+
+  // The oracle is `a * a`, not `math.pow(a, 2)`: a squaring that agreed with
+  // `pow` but not with multiplication would be a bug worth catching, and this
+  // is the only group in the file positioned to catch it. Same for `cube`.
+  _unaryGroup(
+    title: 'sqr',
+    label: (String a) => '$a.sqr()',
+    onDecimal: (Decimal a) => a.sqr(),
+    onDouble: (double a) => a * a,
+    tolerance: _powerTolerance,
+    zeroIsGenuine: (double a) => a == 0,
+    nanIsGenuine: (double a) => a.isNaN,
+  );
+
+  _unaryGroup(
+    title: 'cube',
+    label: (String a) => '$a.cube()',
+    onDecimal: (Decimal a) => a.cube(),
+    onDouble: (double a) => a * a * a,
+    tolerance: _powerTolerance,
+    zeroIsGenuine: (double a) => a == 0,
+    nanIsGenuine: (double a) => a.isNaN,
+  );
+
+  // The square root of a negative is NaN on both sides, so it is asserted —
+  // but only at layer 0, which is as far as the reference bothers to check the
+  // sign; see [_sqrtGuard] for what happens above it.
+  _unaryGroup(
+    title: 'sqrt',
+    label: (String a) => '$a.sqrt()',
+    onDecimal: (Decimal a) => a.sqrt(),
+    onDouble: (double a) => math.sqrt(a),
+    tolerance: _powerTolerance,
+    zeroIsGenuine: (double a) => a == 0,
+    nanIsGenuine: (double a) => a.isNaN || (a < 0 && a.dec.layer == 0),
+    guard: _sqrtGuard,
+  );
+
+  // Unlike `sqrt`, `cbrt` has no domain to leave: every real has a real cube
+  // root, and [Decimal.cbrt] handles the negatives by cube-rooting the
+  // magnitude and putting the sign back, which is exactly what the oracle
+  // below has to do to get an answer out of `math.pow`.
+  _unaryGroup(
+    title: 'cbrt',
+    label: (String a) => '$a.cbrt()',
+    onDecimal: (Decimal a) => a.cbrt(),
+    onDouble: (double a) =>
+        a < 0 ? -math.pow(-a, 1 / 3).toDouble() : math.pow(a, 1 / 3).toDouble(),
+    tolerance: _powerTolerance,
+    zeroIsGenuine: (double a) => a == 0,
+    nanIsGenuine: (double a) => a.isNaN,
+  );
+
+  // `e ^ x` is never zero, so a `double` result of zero is always an underflow
+  // and never an answer — hence the flat `false`.
+  _unaryGroup(
+    title: 'exp',
+    label: (String a) => 'e ^ $a',
+    onDecimal: (Decimal a) => a.exp(),
+    onDouble: (double a) => math.exp(a),
+    tolerance: _powerTolerance,
+    zeroIsGenuine: (double a) => false,
+    nanIsGenuine: (double a) => a.isNaN,
+    guard: _expGuard,
+    announceLiveCount: true,
+  );
+
+  // The group above spends most of its value set on inputs whose exponential
+  // a `double` cannot hold; see [_expSpread] for the one that does not.
+  _unaryGroup(
+    title: 'exp over the double-representable domain',
+    label: (String a) => 'e ^ $a',
+    onDecimal: (Decimal a) => a.exp(),
+    onDouble: (double a) => math.exp(a),
+    tolerance: _powerTolerance,
+    values: _expSpread,
+    zeroIsGenuine: (double a) => false,
+    announceLiveCount: true,
+  );
 }

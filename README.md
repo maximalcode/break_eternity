@@ -95,28 +95,94 @@ A longer, idle-game-flavoured walkthrough lives in
 | Arithmetic | `+`, `-` (binary and unary), `*`, `/`, `%`, `abs()`, `reciprocal()` |
 | Rounding | `floor()`, `ceil()`, `round()`, `truncate()` |
 | Ordering | `<`, `<=`, `>`, `>=`, `==`, `compareTo`, `compareMagnitudeTo`, `max`, `min`, `clamp`, `equalsWithin`, `compareWithin` |
+| Logarithms | `log10()`, `absLog10()`, `pLog10()`, `log2()`, `ln()`, `log(base)` |
+| Powers and roots | `pow()`, `pow10()`, `powBase()`, `root()`, `sqr()`, `sqrt()`, `cube()`, `cbrt()`, `exp()` |
+| Game series helpers | `Decimal.affordGeometricSeries`, `Decimal.sumGeometricSeries`, `Decimal.affordArithmeticSeries`, `Decimal.sumArithmeticSeries`, `Decimal.efficiencyOfPurchase` |
 | Conversion | `toDouble()`, `toString()`, `toStringAsFixed()`, `toStringAsExponential()`, `toStringAsPrecision()`, `toJson()` |
+
+### Buying a batch without a loop
+
+The series helpers are the reason a game reaches for this library rather than
+just a big-number type. Once the player holds `ee1000` gold, "buy max" cannot be
+a purchase loop — there is no integer number of iterations. All five helpers
+answer their question in closed form, in constant time, at any scale.
+
+```dart
+// Generators cost 10 gold, each one 15% dearer than the last, and you own 42.
+final n = Decimal.affordGeometricSeries(1e6.dec, 10.dec, 1.15.dec, 42.dec);
+print(n); // 26 — the 43rd generator through the 68th
+print(Decimal.sumGeometricSeries(n, 10.dec, 1.15.dec, 42.dec));
+// 870433.5234942113, comfortably under the 1e6 available
+
+// Prices that grow by a fixed step instead of a fixed ratio:
+print(Decimal.affordArithmeticSeries(1e6.dec, 100.dec, 50.dec, 42.dec)); // 161
+
+// And which of two upgrades is the better deal (lower is better):
+print(Decimal.efficiencyOfPurchase(550.dec, 100.dec, 10.dec)); // 60.5
+print(Decimal.efficiencyOfPurchase(600.dec, 100.dec, 12.dec)); // 56
+```
+
+`currentOwned` is the count you own *now*, not the index of the next purchase:
+the first item ever bought costs `priceStart * priceRatio^0`. A `priceRatio` of
+exactly 1 gives `NaN` — the formula divides by `log10(1)` — so use the
+arithmetic pair, or plain division, for prices that do not grow.
 
 ## Status
 
-**Milestone 1 — arithmetic and comparison — is implemented.** That covers
-construction, the `sign`/`layer`/`mag` normalisation rules, addition,
-subtraction, multiplication, division, modulo, negation, `abs`, `reciprocal`,
-the rounding family, the full ordering and tolerance-comparison surface, and
-conversion to and from `num` and `String`. All of it is checked against the
-JavaScript reference with generated fixtures and against native `double`
-arithmetic with an oracle test suite.
+**Milestones 1 and 2 are implemented.**
+
+- **Milestone 1 — arithmetic and comparison.** Construction, the
+  `sign`/`layer`/`mag` normalisation rules, addition, subtraction,
+  multiplication, division, modulo, negation, `abs`, `reciprocal`, the rounding
+  family, the full ordering and tolerance-comparison surface, and conversion to
+  and from `num` and `String`.
+- **Milestone 2 — logarithms, powers and the series helpers.** `log10`,
+  `absLog10`, `pLog10`, `log2`, `ln` and `log(base)`; `pow`, `pow10`, `powBase`,
+  `root`, `sqr`, `sqrt`, `cube`, `cbrt` and `exp`; and the five
+  incremental-game series helpers listed in the API table above.
+
+All of it is checked against the JavaScript reference with generated fixtures
+(34 operations, over 26,000 cases replayed from break_eternity.js 2.1.3) and
+against native `double` arithmetic with an oracle test suite. The whole suite
+runs on both the Dart VM and dart2js.
 
 **Not implemented yet.** These are genuinely absent from this release:
 
-- Milestone 2: logarithms (`log10`, `ln`, `logBase`), `pow`, `exp`, `sqrt`, and
-  general roots.
-- Milestone 3: tetration, `slog`, iterated exponentials, pentation, Lambert W,
-  trigonometry, the geometric/arithmetic series game helpers, and the full
-  `parse` grammar (`^^`, `pentate`, `F`, and `PT` notations). Until then `parse`
-  accepts exactly the forms `toString` can emit — plain decimals, `MeX`, `eX`
-  through five stacked `e`s, `(e^N)M`, `NaN`, `Infinity`, `-Infinity` — and
-  throws a `FormatException` on anything else rather than guessing.
+- **Tetration and everything above it**: `tetrate`, `slog`, `iteratedexp`,
+  `iteratedlog`, `layeradd`, `pentate`, and `lambertw`. The representation
+  already reaches 10^^1e308 and `parse` already reads `(e^N)M`, but the
+  operations that navigate that space are milestone 3.
+- Trigonometry, `factorial` and `gamma`.
+- The full `parse` grammar (`^^`, `pentate`, `F` and `PT` notations). Until
+  then `parse` accepts exactly the forms `toString` can emit — plain decimals,
+  `MeX`, `eX` through five stacked `e`s, `(e^N)M`, `NaN`, `Infinity`,
+  `-Infinity` — and throws a `FormatException` on anything else rather than
+  guessing.
+
+### Numerical fidelity
+
+Where break_eternity.js calls `Math.log10` or `Math.log2`, this package calls a
+software implementation (a port of the same fdlibm routines V8 ships) rather
+than `dart:math`. That costs a little speed and buys two things: results are
+identical on the VM, dart2js and Wasm, and exact inputs give exact answers —
+`1e30.dec.log10()` is exactly 30, and `log2` is exact on every power of two in
+the layer-0 range (2^-52 to 2^52), where the one-line spellings available in
+`dart:math` are not. Above that range break_eternity.js is inexact itself, and
+this port reproduces its answers rather than improving on them.
+
+Two functions deliberately do *not* do this: `ln` and `exp` call `dart:math`'s
+`log` and `exp` at layer 0, because that is precisely what the reference does
+with `Math.log` and `Math.exp`. They are therefore the host platform's libm, and
+their last bit can differ between the VM and the browser. If you need a
+reproducible logarithm, use `log10` or `log2`.
+
+Beyond that, this port and break_eternity.js can disagree in the last ulp,
+because two different libm implementations are involved. It almost never
+matters, with one exception worth knowing: `affordGeometricSeries` applies
+`floor` to a ratio of logarithms, so when the money on hand is *exactly* the
+price of a whole number of items, an ulp moves the answer by a whole item.
+Around 1 exact round trip in 16,000 differs from the JavaScript answer by one.
+Do not build game logic that depends on the count at an exact boundary.
 
 ## Differences from break_eternity.js
 

@@ -37,6 +37,7 @@ void main() {
   // file is reported as a skip with an actionable message instead of silently
   // shrinking the suite.
   const List<String> expectedOps = <String>[
+    // Milestone 1.
     'abs',
     'add',
     'ceil',
@@ -51,6 +52,30 @@ void main() {
     'round',
     'sub',
     'trunc',
+
+    // Milestone 2: logarithms, powers and roots.
+    'absLog10',
+    'cbrt',
+    'cube',
+    'exp',
+    'ln',
+    'log',
+    'log10',
+    'log2',
+    'pLog10',
+    'pow',
+    'pow10',
+    'powBase',
+    'root',
+    'sqr',
+    'sqrt',
+
+    // Milestone 2: the incremental-game series helpers ("args" shape).
+    'affordArithmeticSeries',
+    'affordGeometricSeries',
+    'efficiencyOfPurchase',
+    'sumArithmeticSeries',
+    'sumGeometricSeries',
   ];
 
   for (final String op in expectedOps) {
@@ -91,11 +116,14 @@ void _runFixtureFile(File file) {
     fail('${file.path}: missing or non-list "cases" field.');
   }
 
-  final _CaseRunner? runner = _ops[op];
+  final _CaseRunner? runner = _ops[op] ?? _seriesOps[op];
   if (runner == null) {
+    final List<String> known = <String>[..._ops.keys, ..._seriesOps.keys]
+      ..sort();
     fail(
-      '${file.path}: unknown op "$op". Add it to _ops in '
-      'test/fixtures_test.dart (known ops: ${(_ops.keys.toList()..sort()).join(', ')}).',
+      '${file.path}: unknown op "$op". Add it to _ops (or _seriesOps, for the '
+      'n-ary "args" shape) in test/fixtures_test.dart '
+      '(known ops: ${known.join(', ')}).',
     );
   }
 
@@ -187,7 +215,8 @@ _CaseRunner _unary(Decimal Function(Decimal a) f) =>
 _CaseRunner _binary(Decimal Function(Decimal a, Decimal b) f) =>
     (_FixtureCase c) => _Outcome.value(f(c.a, c.requireB()));
 
-/// Every op the fixture generator can emit, keyed by its `"op"` string.
+/// Every `{"a", "b"}`-shaped op the fixture generator can emit, keyed by its
+/// `"op"` string. The n-ary series helpers live in [_seriesOps] instead.
 final Map<String, _CaseRunner> _ops = <String, _CaseRunner>{
   // Unary.
   'neg': _unary((Decimal a) => -a),
@@ -212,7 +241,68 @@ final Map<String, _CaseRunner> _ops = <String, _CaseRunner>{
   // normalising factory.
   'normalize': (_FixtureCase c) =>
       _Outcome.value(Decimal.fromComponents(c.rawA[0], c.rawA[1], c.rawA[2])),
+
+  // --- Milestone 2: logarithms -----------------------------------------
+  'log10': _unary((Decimal a) => a.log10()),
+  'absLog10': _unary((Decimal a) => a.absLog10()),
+  'pLog10': _unary((Decimal a) => a.pLog10()),
+  'log2': _unary((Decimal a) => a.log2()),
+  'ln': _unary((Decimal a) => a.ln()),
+  'log': _binary((Decimal a, Decimal base) => a.log(base)),
+
+  // --- Milestone 2: powers and roots ------------------------------------
+  // pow10 is the only op that exercises the exact-power-of-ten lookup table
+  // directly; `pow` reaches it too, but only for the exponents that survive its
+  // own special cases.
+  'pow10': _unary((Decimal a) => a.pow10()),
+  'sqr': _unary((Decimal a) => a.sqr()),
+  'cube': _unary((Decimal a) => a.cube()),
+  'sqrt': _unary((Decimal a) => a.sqrt()),
+  'cbrt': _unary((Decimal a) => a.cbrt()),
+  'exp': _unary((Decimal a) => a.exp()),
+  'pow': _binary((Decimal a, Decimal b) => a.pow(b)),
+  'root': _binary((Decimal a, Decimal degree) => a.root(degree)),
+
+  // The reference's `pow_base`: `a.powBase(b)` is b^a, so the fixture's "a" is
+  // the exponent and its "b" is the base.
+  'powBase': _binary((Decimal a, Decimal base) => a.powBase(base)),
 };
+
+/// The n-ary series helpers, whose cases carry an `"args"` array instead of
+/// `"a"`/`"b"` (see the "N-ARY OPS" comment in `tool/generate_fixtures.mjs`).
+///
+/// Argument order is the reference's declaration order, which is also the order
+/// the Dart statics take, so each entry is a straight positional splat.
+final Map<String, _CaseRunner> _seriesOps = <String, _CaseRunner>{
+  'affordGeometricSeries': _nary(
+    4,
+    (List<Decimal> a) => Decimal.affordGeometricSeries(a[0], a[1], a[2], a[3]),
+  ),
+  'sumGeometricSeries': _nary(
+    4,
+    (List<Decimal> a) => Decimal.sumGeometricSeries(a[0], a[1], a[2], a[3]),
+  ),
+  'affordArithmeticSeries': _nary(
+    4,
+    (List<Decimal> a) => Decimal.affordArithmeticSeries(a[0], a[1], a[2], a[3]),
+  ),
+  'sumArithmeticSeries': _nary(
+    4,
+    (List<Decimal> a) => Decimal.sumArithmeticSeries(a[0], a[1], a[2], a[3]),
+  ),
+  'efficiencyOfPurchase': _nary(
+    3,
+    (List<Decimal> a) => Decimal.efficiencyOfPurchase(a[0], a[1], a[2]),
+  ),
+};
+
+/// Runner for an `"args"`-shaped op of exactly [arity] arguments.
+///
+/// The arity is checked per case rather than trusted, so a generator change
+/// that drops or adds an argument fails loudly here instead of silently
+/// comparing against the wrong call.
+_CaseRunner _nary(int arity, Decimal Function(List<Decimal> args) f) =>
+    (_FixtureCase c) => _Outcome.value(f(c.requireArgs(arity)));
 
 /// `cmp` is stored as the `Decimal` form of the comparison result, so it can go
 /// through the same triple comparison as everything else.
@@ -262,49 +352,61 @@ _Outcome _runCmp(_FixtureCase c) {
 // Case decoding
 // ---------------------------------------------------------------------------
 
-/// One decoded `{"a": [...], "b": [...], "r": [...]}` entry.
+/// One decoded case: either `{"a", "b"?, "r"}` or the n-ary `{"args", "r"}`.
+///
+/// Both shapes collapse to the same thing — an ordered list of operand triples
+/// plus the expected result — so the runner, the comparison and the failure
+/// report are shared. [rawA] and [rawB] are just names for the first two.
 class _FixtureCase {
   _FixtureCase({
     required this.op,
     required this.index,
-    required this.rawA,
-    required this.rawB,
+    required this.rawArgs,
     required this.expected,
   });
 
   factory _FixtureCase.decode(String op, int index, Map<String, Object?> json) {
-    final List<double> a = _decodeTriple(op, index, 'a', json['a']);
-    final List<double>? b = json['b'] == null
-        ? null
-        : _decodeTriple(op, index, 'b', json['b']);
+    final Object? args = json['args'];
+    final List<List<double>> operands;
+    if (args != null) {
+      if (args is! List<Object?> || args.isEmpty) {
+        fail('$op case $index: "args" is not a non-empty array ($args).');
+      }
+      operands = <List<double>>[
+        for (int k = 0; k < args.length; k++)
+          _decodeTriple(op, index, 'args[$k]', args[k]),
+      ];
+    } else {
+      operands = <List<double>>[
+        _decodeTriple(op, index, 'a', json['a']),
+        if (json['b'] != null) _decodeTriple(op, index, 'b', json['b']),
+      ];
+    }
     final List<double> r = _decodeTriple(op, index, 'r', json['r']);
-    return _FixtureCase(op: op, index: index, rawA: a, rawB: b, expected: r);
+    return _FixtureCase(op: op, index: index, rawArgs: operands, expected: r);
   }
 
   final String op;
   final int index;
 
-  /// The raw components of the first operand, exactly as stored.
-  final List<double> rawA;
-
-  /// The raw components of the second operand, or null for a unary op.
-  final List<double>? rawB;
+  /// The raw components of every operand, in the reference's argument order.
+  final List<List<double>> rawArgs;
 
   /// The expected result components.
   final List<double> expected;
 
+  /// The raw components of the first operand, exactly as stored.
+  List<double> get rawA => rawArgs[0];
+
+  /// The raw components of the second operand, or null for a unary op.
+  List<double>? get rawB => rawArgs.length > 1 ? rawArgs[1] : null;
+
   /// The first operand. Fixture inputs are already normalised, so they are
   /// rebuilt verbatim rather than re-normalised (which would hide bugs).
-  Decimal get a => Decimal.fromComponentsNoNormalize(rawA[0], rawA[1], rawA[2]);
+  Decimal get a => _decimalAt(0);
 
   /// The second operand, for binary ops.
-  Decimal? get b {
-    final List<double>? raw = rawB;
-    if (raw == null) {
-      return null;
-    }
-    return Decimal.fromComponentsNoNormalize(raw[0], raw[1], raw[2]);
-  }
+  Decimal? get b => rawArgs.length > 1 ? _decimalAt(1) : null;
 
   /// The second operand, failing loudly if the fixture omitted it.
   Decimal requireB() {
@@ -315,8 +417,27 @@ class _FixtureCase {
     return value;
   }
 
+  /// Every operand as a [Decimal], failing loudly on the wrong arity.
+  List<Decimal> requireArgs(int arity) {
+    if (rawArgs.length != arity) {
+      fail(
+        '$op case $index: expected $arity arguments in "args", '
+        'found ${rawArgs.length}.',
+      );
+    }
+    return <Decimal>[for (int k = 0; k < arity; k++) _decimalAt(k)];
+  }
+
+  Decimal _decimalAt(int k) {
+    final List<double> raw = rawArgs[k];
+    return Decimal.fromComponentsNoNormalize(raw[0], raw[1], raw[2]);
+  }
+
   /// The inputs, formatted for a failure message.
   String describeInputs() {
+    if (rawArgs.length > 2) {
+      return 'args=(${rawArgs.map(_fmtTriple).join(', ')})';
+    }
     final List<double>? raw = rawB;
     if (raw == null) {
       return 'a=${_fmtTriple(rawA)}';
