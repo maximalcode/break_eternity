@@ -1145,6 +1145,14 @@ class Decimal implements Comparable<Decimal> {
   }
 
   /// The quotient of this and [other]. Reference: `div()`.
+  ///
+  /// Division is multiplication by a [reciprocal], as it is in the reference,
+  /// so it is not correctly rounded: 9,104 of the 40,000 quotients with both
+  /// operands in 1–200 differ from IEEE division in the last ulp, and
+  /// `3.dec / 5.dec` is `0.6000000000000001`. This is almost always harmless —
+  /// unlike [pow], a quotient's true value rarely lands on an integer, so a
+  /// following [floor] has nothing to trip over. See the README's "Do not
+  /// `floor` a `pow`" for when it does matter.
   Decimal operator /(Decimal other) => this * other.reciprocal();
 
   /// The reciprocal, `1 / this`.
@@ -1590,6 +1598,17 @@ class Decimal implements Comparable<Decimal> {
   /// The `-8` above is off by an ulp because the route through `log10` and
   /// `pow10` is not exact — the JavaScript original prints the same thing.
   ///
+  /// **Do not apply [floor] to the result when you need an exact integer
+  /// power.** The one-ulp error above is harmless until `floor` sees it, and
+  /// the true answer of an integer power *is* an integer, so `floor` is
+  /// balanced exactly on the boundary and lands one low whenever the ulp falls
+  /// the wrong way: `2.dec.pow(3.dec).floor()` can be `7`. This is the failure
+  /// mode behind off-by-one cost tables and level curves. Compute integer
+  /// powers in `int` or `BigInt` while they fit and switch to [Decimal] above
+  /// that, or compare against the unfloored value. [round] is not a fix — it
+  /// moves the hazard to the halfway points. See the README's "Do not `floor`
+  /// a `pow`", and `test/precision_test.dart`, which pins the behaviour.
+  ///
   /// Reference: `pow(value)`.
   Decimal pow(Decimal other) {
     final Decimal a = this;
@@ -1701,6 +1720,9 @@ class Decimal implements Comparable<Decimal> {
   /// print((-8).dec.root(3.dec));  // -1.9999999999999998, i.e. -2
   /// ```
   ///
+  /// As the `-8` shows, this is built on [pow] and so is not exact on integer
+  /// results. Do not [floor] it when you need the exact root.
+  ///
   /// Reference: `root(value)`.
   Decimal root(Decimal degree) {
     if (this < zero && degree.mod(two, floored: true) == one) {
@@ -1741,6 +1763,9 @@ class Decimal implements Comparable<Decimal> {
   }
 
   /// This value squared. Reference: `sqr()`.
+  ///
+  /// Built on [pow], so it inherits its inexactness on integer results —
+  /// `7.dec.sqr()` can be `48.99999999999999`. Do not [floor] it.
   Decimal sqr() => pow(two);
 
   /// The square root: the non-negative `X` with `X * X == this`.
@@ -1775,9 +1800,14 @@ class Decimal implements Comparable<Decimal> {
   }
 
   /// This value cubed. Reference: `cube()`.
+  ///
+  /// Built on [pow]; see the caveat there before applying [floor].
   Decimal cube() => pow(_three);
 
   /// The cube root: the `X` with `X * X * X == this`, negative for negatives.
+  ///
+  /// Built on [pow], so `64.dec.cbrt()` can be `3.999999999999999`. Do not
+  /// [floor] it when you need the exact root.
   ///
   /// Reference: `cbrt()`.
   Decimal cbrt() {

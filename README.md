@@ -219,6 +219,68 @@ price of a whole number of items, an ulp moves the answer by a whole item.
 Around 1 exact round trip in 16,000 differs from the JavaScript answer by one.
 Do not build game logic that depends on the count at an exact boundary.
 
+### Do not `floor` a `pow`
+
+The rule above has a sharp edge that is worth stating on its own, because it
+bites in ordinary game code rather than in tests.
+
+`pow` is computed in log space, as `10^(log10(a) * b)`. That is what lets it
+reach magnitudes a `double` cannot name, and it means the result is *not exact
+even when the true answer is an integer*:
+
+```dart
+2.dec.pow(3.dec);   // 7.999999999999999   — not 8
+2.dec.pow(12.dec);  // 4095.999999999998   — not 4096
+7.dec.sqr();        // 48.99999999999999   — not 49
+64.dec.cbrt();      // 3.999999999999999   — not 4
+```
+
+93 of the 132 integer powers with base 2–12 and exponent 1–12 come out low.
+On its own this is harmless — the error is one ulp, and every comparison and
+display path absorbs it. Applying `floor` does not:
+
+```dart
+2.dec.pow(3.dec).floor();  // 7, not 8
+```
+
+That is a whole unit, and it is exactly what a cost table, a threshold ladder
+or an XP curve does. A curve of the common shape `floor(base * k^(n/d))` lands
+on an *exact integer* every time `d` divides `n`, so `floor` sits precisely on
+the boundary and one ulp low drops it by one — silently, and cumulatively if
+the terms are summed. Porting one real game's level curve to `Decimal` this way
+made it disagree at 76 of 119 levels.
+
+If you need an exact integer power, compute it in `int` (or `BigInt`) while the
+values still fit, and switch to `Decimal` above that. If you need a *threshold*,
+compare against the unfloored value rather than flooring it. `round()` is not a
+fix: it moves the failure to the halfway points instead of the integers.
+
+`/` is inexact for a related reason — it is implemented as `a * b.reciprocal()`,
+so it is not correctly rounded. 9,104 of the 40,000 quotients with both operands
+in 1–200 differ from IEEE division, and `3.dec / 5.dec` is `0.6000000000000001`.
+
+That one is far less dangerous in practice, and the distinction is worth
+understanding rather than memorising. `floor(pow(...))` fails because the true
+answer *is* an exact integer, so `floor` is balanced on the boundary and any
+error at all decides it. A percentage applied to a quantity almost never lands
+exactly on an integer, so the same one-ulp error is absorbed harmlessly. The
+common basis-point idiom is exact for that reason: across 344,229 combinations
+of `x` and `bp`, and again at operands near 1e9,
+
+```dart
+(x.dec * (10000 + bp).dec / 10000.dec).floor()
+```
+
+reproduced the integer `x * (10000 + bp) ~/ 10000` every single time. The rule
+is not "avoid division" — it is **be careful wherever `floor` can sit on an
+exact boundary**, which is the defining property of a power, not of a
+percentage.
+
+**All of this is faithful to break_eternity.js**, which produces bit-identical
+answers — including the same 9,104 divergent quotients. It is the price of a
+representation that reaches 10^^1e308, not a defect in the port, and
+`test/precision_test.dart` pins it so that it cannot be "fixed" by accident.
+
 ## Differences from break_eternity.js
 
 The behaviour is ported faithfully; the shape of the API is not, because the JS
