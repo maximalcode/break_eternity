@@ -43,6 +43,28 @@
 //
 // Every element of "args" is a normalised component triple encoded exactly like
 // "a"/"b"/"r" elsewhere in this file.
+//
+// SCALAR PARAMETERS ("n" and "lin")
+// ---------------------------------
+// The tetration family takes plain JavaScript numbers, not Decimals, for
+// heights and iteration counts — and a `linear` boolean deciding whether
+// non-integer heights use the analytic approximation or the linear one. Those
+// cases carry two extra fields:
+//
+//   {"a": [s,l,m], "b": [s,l,m], "n": [2.5], "lin": false, "r": [s,l,m]}
+//
+// "n" is an array of scalars encoded like any other number here (so NaN and the
+// infinities are strings), and is absent for the ops that take no scalar. "lin"
+// is a JSON boolean. Argument mapping per op:
+//
+//   tetrate         a^^n, with b at the top of the tower
+//   pentate         a^^^n, with b at the top of the tower
+//   iteratedLog     log base b applied to a, n times
+//   slog            super-logarithm of a to base b
+//   layerAdd10      a with n added to its layer
+//   layerAdd        a with n added to its slog(b) representation
+//   lambertW        W_0(a); lambertWBranch is W_-1(a)
+//   pentaLog        penta-logarithm of a to base b
 
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
@@ -668,6 +690,391 @@ const M2_SERIES = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// Milestone 3: tetration, its inverses, and pentation.
+// ---------------------------------------------------------------------------
+
+/**
+ * Bases and values where tetration does something other than overflow: both
+ * ends of the convergence range [e^-e, e^(1/e)], the neighbourhood of 1, small
+ * integers, and a handful of towers.
+ */
+function tetrationValues() {
+  const fromNumbers = [
+    0, 1, -1, 2, -2, 3, 4, 10, 100, 1e10, 1e100, 1e308,
+    0.5, 0.9, 0.99, 1.01, 1.1, 1.2, 1.3, 1.4,
+    // The convergence limit e^(1/e), the hotfix threshold just below it, and
+    // the floor e^-e, each with a neighbour on either side.
+    1.44466786100976613366, 1.4446678610091, 1.444667861009099, 1.45, 1.5,
+    Math.E, 1 / Math.E, 0.06598803584531253708, 0.0659, 0.07,
+    0.1, 0.25, 0.75, 1e-10, -0.5, -1.5, -10,
+    Infinity, -Infinity, NaN,
+  ].map(D_);
+
+  const fromComponents = [];
+  for (const sign of [1, -1]) {
+    for (const layer of [1, 2, 3]) {
+      for (const mag of [16, 100, 1e6, 1e15, -16, -100]) {
+        fromComponents.push(FC(sign, layer, mag));
+      }
+    }
+  }
+
+  return [...fromNumbers, ...fromComponents];
+}
+
+const TETRATION_VALUES = tetrationValues();
+
+/**
+ * Heights, as plain numbers — the reference takes a JS number, not a Decimal.
+ *
+ * Negative *non-integer* heights are deliberately absent. They are the one
+ * genuinely slow shape in the whole library: `x^^-2.5` is `iteratedlog` with a
+ * fractional part, which reaches `layeradd`, which calls `slog`, which calls
+ * `tetrate` a hundred times — and on a small operand that recurses back into
+ * the same path. A single case can take most of a second in either language, so
+ * they are crossed explicitly in the focus lists below instead of being swept.
+ */
+const TETRATION_HEIGHTS = [
+  0, 1, -1, 2, -2, 3, -3, 4, 5, 10,
+  0.5, 1.5, 2.5, 3.5, 0.1, 0.9, 1.1,
+  1e3, 1e6, 1e10, 1e15, 1e100, 1e300, Infinity, -Infinity, NaN,
+];
+
+/** What sits at the top of the tower instead of the implicit 1. */
+const TETRATION_PAYLOADS = [
+  1, 0, 2, 3, 10, 0.5, -1, -2, 1e10, 1e100, Infinity, NaN,
+].map(D_).concat([FC(1, 1, 20), FC(1, 2, 20)]);
+
+/** Bases for iteratedlog: 1 and below are the degenerate ones. */
+const HYPER_BASES = [
+  10, 2, 3, Math.E, 4, 100, 1e10, 1e100, 1.5, 1.2, 1.1,
+  1, 0, -2, 0.5, 0.1, Infinity, NaN,
+].map(D_).concat([FC(1, 1, 20)]);
+
+// The slog family needs its own, narrower pools. `slog` runs a hundred
+// tetration steps per call, so its cost is a hundred times whatever tetration
+// costs on that base — and three families of input are pathological:
+//
+//   * a base in (1, e^(1/e)], where tetration iterates up to 10,000 times:
+//     about a second a call;
+//   * a negative operand, which the estimator climbs out of one exponentiation
+//     at a time: also about a second;
+//   * a base in (0, 1) paired with an operand whose slog is a small number, the
+//     worst of the lot — `Decimal.slog(0, 0.1)` takes 39 seconds.
+//
+// All three are worth covering and none is worth covering hundreds of times, so
+// the swept pools leave them out and the focus lists put a handful back.
+
+/** Operands for slog / layeradd: positive, and none that reach the slow paths. */
+const SLOG_VALUES = [
+  0, 1, 2, 3, 10, 100, 1e6, 1e10, 1e15, 1e100, 1e308, 9e15,
+  0.5, 0.1, 1e-10, 1e-100, 1e-308, Math.E, LAYER_DOWN, 1.0000001,
+  Infinity, NaN,
+].map(D_).concat([
+  ...[1, 2, 3, 4, 5, 6, 10].map((l) => FC(1, l, 100)),
+  ...[1, 2, 3].map((l) => FC(1, l, 1e15)),
+  FC(1, 1, -100), FC(1, 2, -100), FC(1, 1, 20), FC(1, 4, 1e6),
+]);
+
+/** Bases for slog / layeradd, minus the pathological families. */
+const SLOG_BASES = [
+  10, 2, 3, Math.E, 4, 100, 1e10, 1e100, 1.5, 1, 0, -2, 0.5, Infinity, NaN,
+].map(D_).concat([FC(1, 1, 20)]);
+
+/** Bases in (1, e^(1/e)], where the infinite power tower converges. */
+const CONVERGENT_BASES = [1.1, 1.2, 1.44466786100976613366].map(D_);
+
+/** Negative operands, which slog climbs out of one exponentiation at a time. */
+const SLOG_NEGATIVES = [-5, -0.5, -1].map(D_).concat([FC(-1, 2, 20)]);
+
+/** How many logarithms to take, or how much to shift a layer by. */
+const HYPER_COUNTS = [
+  0, 1, -1, 2, -2, 3, 10, 100, 1e3, 1e10, 1e15, Infinity, -Infinity, NaN,
+];
+
+/** The fractional counts, which reach `slog` and so get focused, not swept. */
+const HYPER_FRACTIONS = [0.5, -0.5, 1.5, -1.5, 2.5, -2.5, 0.1, -0.1];
+
+/** Pentation saturates almost at once, so heights stay small. */
+const PENTATION_HEIGHTS = [0, 1, -1, 2, 3, 4, 5, 0.5, -0.5, 1.5, 2.5, NaN];
+
+/**
+ * Bases small enough that pentation terminates in reasonable time. Anything
+ * above about 3 is already infinite at height 3.
+ */
+const PENTATION_VALUES = [
+  0, 1, -1, 2, 3, 10, 0.5, 0.9, 1.1, 1.4, 1.5, Math.E, 0.25, -2, 1e10,
+  Infinity, -Infinity, NaN,
+].map(D_);
+
+/** Penta-logarithm inputs, minus the negatives — see PENTA_LOG_FOCUS. */
+const PENTA_LOG_VALUES = [
+  0, 1, 2, 3, 10, 65536, 0.5, 0.9, 1.1, 1.4, Math.E, 0.25, 1e10, 1e100,
+  Infinity, NaN,
+].map(D_);
+
+/**
+ * Every `[a, n, b, linear]` combination of the given lists. Used to cover the
+ * expensive shapes exhaustively but in small numbers; pass `[undefined]` for a
+ * parameter the op does not take.
+ */
+function cross(aList, nList, bList, linears) {
+  const out = [];
+  for (const a of aList) {
+    for (const n of nList) {
+      for (const b of bList) {
+        for (const linear of linears) out.push([a, n, b, linear]);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Inputs for the Lambert W function. Both branches meet at -1/e, where the
+ * iteration is at its least accurate, so that point and its neighbours are
+ * sampled densely; W_-1 additionally needs plenty of values in [-1/e, 0].
+ */
+function lambertValues() {
+  const branch = -0.3678794411710499; // The reference's -1/e.
+  const fromNumbers = [
+    0, 1, -1, 2, Math.E, 10, 100, 1e10, 1e100, 1e300,
+    branch, branch + 1e-17, branch - 1e-17, branch + 1e-9, branch - 1e-9,
+    -1 / Math.E, -0.36, -0.3, -0.2, -0.1, -0.01, -1e-6, -1e-300, -1e-320,
+    0.1, 0.01, 1e-6, 1e-300, 1e-320, 0.5, 0.9, 5, 9, 9.999, 10.001,
+    Infinity, -Infinity, NaN,
+  ].map(D_);
+
+  const fromComponents = [];
+  for (const sign of [1, -1]) {
+    for (const layer of [1, 2, 3, 4]) {
+      for (const mag of [16, 100, 1e6, 1e15, -16, -100]) {
+        fromComponents.push(FC(sign, layer, mag));
+      }
+    }
+  }
+
+  return [...fromNumbers, ...fromComponents];
+}
+
+const LAMBERT_VALUES = lambertValues();
+
+/**
+ * Cases for the tetration family: a `Decimal` operand in "a", an optional
+ * scalar parameter in "n", an optional second `Decimal` in "b", and the
+ * `linear` flag in "lin".
+ *
+ * `spec.fn(a, n, b, linear)` computes the reference result; `n` is undefined
+ * for the ops that take no scalar, and `b` is undefined for the unary ones.
+ * Each pool is walked with its own coprime stride so the sweep covers every
+ * value of every pool many times over without repeating a combination early.
+ */
+function hyperCases(op, spec) {
+  const rng = mulberry32(seedFor(op));
+  const cases = [];
+  const { fn, aValues, nValues, bValues, sweep, count, aPool, focus } = spec;
+
+  const push = (a, n, b, linear) => {
+    const c = { a: triple(a) };
+    if (b !== undefined) c.b = triple(b);
+    if (n !== undefined) c.n = [enc(n)];
+    c.lin = linear;
+    // Two functions in the reference give up by throwing rather than by
+    // returning NaN: `excess_slog` on inputs it cannot classify, and both
+    // Lambert W solvers when the iteration will not converge. Those cases are
+    // recorded as such, and the Dart side asserts it throws too — silently
+    // dropping them would hide a real difference in behaviour.
+    try {
+      c.r = triple(fn(a, n, b, linear));
+    } catch (e) {
+      c.throws = String(e.message).split(':')[0];
+    }
+    cases.push(c);
+  };
+
+  for (const [a, n, b, linear] of focus ?? []) push(a, n, b, linear);
+
+  const sa = coprimeStride(aValues.length, 1);
+  const sn = nValues ? coprimeStride(nValues.length, 5) : 1;
+  const sb = bValues ? coprimeStride(bValues.length, 9) : 1;
+  for (let i = 0; i < sweep; i++) {
+    push(
+      aValues[(i * sa) % aValues.length],
+      nValues ? nValues[(i * sn) % nValues.length] : undefined,
+      bValues ? bValues[(i * sb) % bValues.length] : undefined,
+      i % 2 === 1,
+    );
+  }
+
+  for (let i = 0; i < count; i++) {
+    const pool = aPool ?? aValues;
+    push(
+      rng() < 0.7
+        ? aValues[Math.floor(rng() * aValues.length)]
+        : pool[Math.floor(rng() * pool.length)],
+      nValues ? nValues[Math.floor(rng() * nValues.length)] : undefined,
+      bValues ? bValues[Math.floor(rng() * bValues.length)] : undefined,
+      rng() < 0.5,
+    );
+  }
+
+  return cases;
+}
+
+const M3_OPS = {
+  tetrate: {
+    fn: (a, n, b, linear) => a.tetrate(n, b, linear),
+    aValues: TETRATION_VALUES,
+    nValues: TETRATION_HEIGHTS,
+    bValues: TETRATION_PAYLOADS,
+    aPool: M2_POOL,
+    sweep: 500,
+    count: 250,
+    focus: cross(
+      [10, 2, 0.5, 1.2, Math.E].map(D_),
+      [-0.5, -1.5, -2.5],
+      [1, 2].map(D_),
+      [false],
+    ).concat(
+      cross([10, 2].map(D_), [-0.5, -2.5], [D_(1)], [true]),
+    ),
+  },
+  iteratedLog: {
+    fn: (a, n, b, linear) => a.iteratedlog(b, n, linear),
+    aValues: M2_VALUES,
+    nValues: HYPER_COUNTS,
+    bValues: HYPER_BASES,
+    aPool: M2_POOL,
+    sweep: 400,
+    count: 200,
+    focus: cross(
+      [1e100, 3, 0.5, 1e10].map(D_).concat([FC(1, 3, 100)]),
+      HYPER_FRACTIONS,
+      [10, 2].map(D_),
+      [false],
+    ),
+  },
+  slog: {
+    fn: (a, n, b, linear) => a.slog(b, 100, linear),
+    aValues: SLOG_VALUES,
+    bValues: SLOG_BASES,
+    sweep: 400,
+    count: 200,
+    focus: cross(
+      [1e100, 3, 1e10, 0.5].map(D_),
+      [undefined],
+      CONVERGENT_BASES,
+      [false],
+    ).concat(
+      cross(SLOG_NEGATIVES, [undefined], [10, 2].map(D_), [false]),
+      cross([1e100, 1e10].map(D_), [undefined], [D_(0.1)], [false]),
+    ),
+  },
+  layerAdd10: {
+    fn: (a, n, b, linear) => a.layeradd10(n, linear),
+    aValues: M2_VALUES,
+    nValues: HYPER_COUNTS,
+    aPool: M2_POOL,
+    sweep: 400,
+    count: 200,
+    focus: cross(
+      [3, 2, 0.5, 1e100, 1e10].map(D_),
+      HYPER_FRACTIONS,
+      [undefined],
+      [false],
+    ),
+  },
+  layerAdd: {
+    fn: (a, n, b, linear) => a.layeradd(n, b, linear),
+    aValues: SLOG_VALUES,
+    nValues: HYPER_COUNTS,
+    bValues: SLOG_BASES,
+    sweep: 400,
+    count: 200,
+    focus: cross(
+      [1e100, 3, 0.5].map(D_),
+      [0.5, -0.5, 2.5, -2.5],
+      [10, 2].map(D_),
+      [false],
+    ).concat(cross([1e100, 3].map(D_), [1, -1], CONVERGENT_BASES, [false])),
+  },
+  // The two Lambert W branches get their own files rather than a flag, because
+  // their domains barely overlap: W_-1 is only defined on [-1/e, 0].
+  lambertW: {
+    fn: (a) => a.lambertw(),
+    aValues: LAMBERT_VALUES,
+    aPool: M2_POOL,
+    sweep: 250,
+    count: 200,
+  },
+  lambertWBranch: {
+    fn: (a) => a.lambertw(false),
+    aValues: LAMBERT_VALUES,
+    aPool: M2_POOL,
+    sweep: 250,
+    count: 200,
+  },
+  // Pentation and its inverse are generated entirely from explicit crosses,
+  // with no random sweep. They saturate almost at once — `10^^^3` is already
+  // infinite — so there is little for a random draw to discover, while the cost
+  // of a single unlucky combination is seconds rather than microseconds. Naming
+  // every case keeps both this script and the Dart suite predictable.
+  pentate: {
+    fn: (a, n, b, linear) => a.pentate(n, b, linear),
+    aValues: PENTATION_VALUES,
+    nValues: PENTATION_HEIGHTS,
+    bValues: TETRATION_PAYLOADS,
+    sweep: 0,
+    count: 0,
+    focus: [
+      // The whole base pool against every cheap height, payload 1.
+      ...cross(PENTATION_VALUES, [0, 1, 2, 3, -1, 0.5, 1.5, NaN], [D_(1)], [
+        false,
+      ]),
+      // Payloads other than 1, at whole heights.
+      ...cross(
+        [2, 3, 0.5, 1.1].map(D_),
+        [1, 2, 3],
+        [0, 2, 0.5, -1].map(D_),
+        [false],
+      ),
+      // Height -2 is repeated slog, the slow direction.
+      ...cross([2, 1.1, 1.4, 3].map(D_), [-2], [D_(1)], [false]),
+      // A fractional height with a payload other than 1 is the one shape that
+      // reaches penta_log, which is the slowest function in the library.
+      ...cross([2, 3].map(D_), [1.5, 2.5], [2, 0.5].map(D_), [false]),
+      // And the linear approximation, which takes a different path entirely.
+      ...cross([2, 3, 1.1, 0.5].map(D_), [1.5, 3], [D_(1)], [true]),
+    ],
+  },
+  pentaLog: {
+    fn: (a, n, b, linear) => a.penta_log(b, 100, linear),
+    aValues: PENTA_LOG_VALUES,
+    bValues: PENTATION_VALUES,
+    sweep: 0,
+    count: 0,
+    focus: [
+      ...cross(
+        PENTA_LOG_VALUES,
+        [undefined],
+        [2, 3, 10, Math.E, 1.5].map(D_),
+        [false],
+      ),
+      // Bases at or below 1, where the penta-logarithm has no meaning.
+      ...cross(
+        [2, 1e10].map(D_),
+        [undefined],
+        [1, 0.5, 0, -2, NaN, Infinity].map(D_),
+        [false],
+      ),
+      // Negative operands, which the reference warns are incredibly slow.
+      ...cross([-0.5, -0.9].map(D_), [undefined], [2, 3].map(D_), [false]),
+      ...cross([2, 1e10, 0.5].map(D_), [undefined], [2, 10].map(D_), [true]),
+    ],
+  },
+};
+
 function write(op, cases) {
   const body = cases
     .map((c) => {
@@ -675,7 +1082,13 @@ function write(op, cases) {
       if (c.args) parts.push(`"args":${JSON.stringify(c.args)}`);
       else parts.push(`"a":${JSON.stringify(c.a)}`);
       if (c.b) parts.push(`"b":${JSON.stringify(c.b)}`);
-      parts.push(`"r":${JSON.stringify(c.r)}`);
+      if (c.n) parts.push(`"n":${JSON.stringify(c.n)}`);
+      if (c.lin !== undefined) parts.push(`"lin":${c.lin}`);
+      if (c.throws !== undefined) {
+        parts.push(`"throws":${JSON.stringify(c.throws)}`);
+      } else {
+        parts.push(`"r":${JSON.stringify(c.r)}`);
+      }
       if (c.c !== undefined) parts.push(`"c":${JSON.stringify(enc(c.c))}`);
       return `    {${parts.join(',')}}`;
     })
@@ -729,6 +1142,26 @@ function main() {
       op,
       naryCases(op, spec.fn, spec.pools, 220, 180, spec.focus ?? []),
     );
+  }
+
+  // --- Milestone 3 ---------------------------------------------------------
+
+  // The floored modulo: same inputs as `mod`, the other sign convention. The
+  // two agree on positive operands and differ on everything else, so it needs
+  // its own file rather than a flag.
+  counts.modFloored = write(
+    'modFloored',
+    binaryCases('modFloored', (a, b) => ({ r: triple(a.mod(b, true)) }), N),
+  );
+
+  // These are the slow ones — tetration on a base inside the convergence range
+  // iterates up to 10,000 times per call, and slog calls tetrate 100 times —
+  // so progress is reported as it goes rather than only at the end.
+  for (const [op, spec] of Object.entries(M3_OPS)) {
+    const started = process.hrtime.bigint();
+    counts[op] = write(op, hyperCases(op, spec));
+    const ms = Number(process.hrtime.bigint() - started) / 1e6;
+    process.stderr.write(`  ${op.padEnd(16)} ${counts[op]} cases, ${ms.toFixed(0)}ms\n`);
   }
 
   const width = Math.max(...Object.keys(counts).map((k) => k.length));

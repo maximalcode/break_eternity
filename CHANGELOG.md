@@ -18,8 +18,22 @@ Initial release: the core `Decimal` value type.
   `affordArithmeticSeries`, `sumArithmeticSeries` and `efficiencyOfPurchase`.
   These are what let a game offer "buy max" when the player's balance has long
   since passed the point where a purchase loop could terminate.
+- `mod(other, floored: true)` alongside `%`, which is the truncated-division
+  modulo. The two agree on positive operands and differ in sign otherwise.
+- Tetration and its inverses: `tetrate`, `iteratedExp`, `iteratedLog`, `slog`,
+  `layerAdd`, `layerAdd10` and `lambertW` (both real branches), plus `pentate`
+  and `pentaLog` one level above. Non-integer heights use the reference's
+  analytic approximation for bases up to 10 and its linear one above that; pass
+  `linear: true` to force the linear approximation everywhere. Heights are a
+  plain `num`, as they are in the original — a tower taller than 1.8e308 is not
+  representable regardless.
+- The full `parse` grammar: `x^y`, `x^^y`, `x^^^y` (each optionally carrying a
+  payload after a semicolon), the `XpY` / `X PT Y` / `XFY` tetration
+  shorthands, stacked exponents such as `2e3e4`, `(e^N)M` with a negative or
+  fractional `N`, exponents no double can hold such as `1e400`, and thousands
+  separators.
 - Verified against the JavaScript reference implementation with generated
-  fixtures (34 operations, 26,978 cases) and a native-`double` oracle suite,
+  fixtures (44 operations, 32,561 cases) and a native-`double` oracle suite,
   both run on the Dart VM and on dart2js.
 - Self-contained software `log10` and `log2` (no dependency on the host C
   library's `log`), so results are identical on the Dart VM, dart2js and Wasm,
@@ -32,6 +46,21 @@ Initial release: the core `Decimal` value type.
   to JavaScript it differs by architecture — `7.dec.sqr()` is
   `48.99999999999999` on macOS/arm64 and exactly `49` on Linux/x64 — so
   anything reached through `pow` is portable to a tolerance, not to the bit.
+
+Two deliberate divergences from the reference, both introduced with the
+tetration work and both in the same direction — refusing rather than guessing:
+
+- `parse` rejects input JavaScript's lenient `parseFloat` would accept. The
+  reference reads `5 apples` as `5`, `garbagee5` as `1e5`, and a 400-digit
+  integer as `0`; all three raise a `FormatException` here.
+- `parse` strips every thousands separator. The reference uses `String.replace`
+  with a string pattern, which removes only the first, so it reads `1,000,000`
+  as `1000`.
+
+Also worth knowing: `<=` and `>=` follow IEEE 754 here, while the reference
+defines them as `!gt` and `!lt` and so reports NaN as satisfying both. The
+places inside tetration where that changes an answer — `slog` of a NaN, mainly
+— reproduce the reference's result explicitly, so the fixtures still match.
 
 Note on the software `log2`: an earlier draft computed it as
 `log10(x) / log10(2)`, which returns `-10.999999999999998` for 2^-11 where

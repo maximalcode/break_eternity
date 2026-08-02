@@ -15,6 +15,7 @@ void main() {
   _theOverflowWall();
   _lifeAboveTheWall();
   _theShop();
+  _prestigeLayers();
   _saveAndLoad();
 }
 
@@ -151,6 +152,41 @@ void _theShop() {
   print('');
 }
 
+/// Tetration: the operation that measures numbers too big for a logarithm.
+void _prestigeLayers() {
+  print('--- prestige layers ---');
+
+  // A tower of tens n high. This is exactly what "layer n" means, so it costs
+  // nothing to build no matter how tall it is.
+  print('10^^3         = ${10.dec.tetrate(3)}');
+  print('10^^4         = ${10.dec.tetrate(4)}');
+  print('10^^1e9       = ${10.dec.tetrate(1e9)}');
+
+  // Once a value is that large, log10 stops being informative: the logarithm
+  // of a tower is just a slightly shorter tower. slog answers the question you
+  // actually wanted — "how many layers deep is this?" — and grows slowly
+  // enough to drive a progress bar.
+  final wealth = Decimal.parse('(e^1000)16');
+  print('wealth        = $wealth');
+  print('log10(wealth) = ${wealth.log10()}  <- still unreadable');
+  print('slog(wealth)  = ${wealth.slog()}  <- 1001 layers deep');
+
+  // Fractional layers, for a prestige bar that moves smoothly between them.
+  final start = 1e10.dec;
+  final quarters = <String>[
+    for (int i = 0; i <= 4; i++) start.layerAdd10(i / 4).toString(),
+  ];
+  print('1e10 + 0..1 layer in quarters:');
+  for (final step in quarters) {
+    print('  $step');
+  }
+
+  // And one level further up, where even tetration saturates immediately.
+  print('2^^^3         = ${2.dec.pentate(3)}');
+  print('3^^^3         = ${3.dec.pentate(3)}');
+  print('');
+}
+
 /// `toString` and `parse` round-trip, which is what a save file needs.
 void _saveAndLoad() {
   print('--- save / load ---');
@@ -165,4 +201,10 @@ void _saveAndLoad() {
 
   // tryParse returns null instead of throwing, for untrusted save data.
   print('garbage = ${Decimal.tryParse('not a number')}');
+
+  // parse reads more than toString writes, so a hand-written config can say
+  // what it means.
+  print('10^^4   = ${Decimal.parse('10^^4')}');
+  print('3pt5    = ${Decimal.parse('3pt5')}');
+  print('1e400   = ${Decimal.parse('1e400')}');
 }

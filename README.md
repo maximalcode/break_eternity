@@ -92,11 +92,13 @@ A longer, idle-game-flavoured walkthrough lives in
 | Constants | `zero`, `one`, `negativeOne`, `two`, `ten`, `nan`, `infinity`, `negativeInfinity`, `numberMax`, `numberMin`, `layerSafeMax`, `layerSafeMin`, `layerMax`, `layerMin` |
 | Components | `sign`, `layer`, `mag`, `mantissa`, `exponent`, `signum` |
 | Predicates | `isNaN`, `isFinite`, `isInfinite`, `isNegative`, `isZero` |
-| Arithmetic | `+`, `-` (binary and unary), `*`, `/`, `%`, `abs()`, `reciprocal()` |
+| Arithmetic | `+`, `-` (binary and unary), `*`, `/`, `%`, `mod()`, `abs()`, `reciprocal()` |
 | Rounding | `floor()`, `ceil()`, `round()`, `truncate()` |
 | Ordering | `<`, `<=`, `>`, `>=`, `==`, `compareTo`, `compareMagnitudeTo`, `max`, `min`, `clamp`, `equalsWithin`, `compareWithin` |
 | Logarithms | `log10()`, `absLog10()`, `pLog10()`, `log2()`, `ln()`, `log(base)` |
 | Powers and roots | `pow()`, `pow10()`, `powBase()`, `root()`, `sqr()`, `sqrt()`, `cube()`, `cbrt()`, `exp()` |
+| Tetration | `tetrate()`, `iteratedExp()`, `iteratedLog()`, `slog()`, `layerAdd()`, `layerAdd10()`, `lambertW()` |
+| Pentation | `pentate()`, `pentaLog()` |
 | Game series helpers | `Decimal.affordGeometricSeries`, `Decimal.sumGeometricSeries`, `Decimal.affordArithmeticSeries`, `Decimal.sumArithmeticSeries`, `Decimal.efficiencyOfPurchase` |
 | Conversion | `toDouble()`, `toString()`, `toStringAsFixed()`, `toStringAsExponential()`, `toStringAsPrecision()`, `toJson()` |
 
@@ -129,7 +131,7 @@ arithmetic pair, or plain division, for prices that do not grow.
 
 ## Status
 
-**Milestones 1 and 2 are implemented.**
+**Milestones 1 to 3 are implemented.**
 
 - **Milestone 1 — arithmetic and comparison.** Construction, the
   `sign`/`layer`/`mag` normalisation rules, addition, subtraction,
@@ -140,24 +142,48 @@ arithmetic pair, or plain division, for prices that do not grow.
   `absLog10`, `pLog10`, `log2`, `ln` and `log(base)`; `pow`, `pow10`, `powBase`,
   `root`, `sqr`, `sqrt`, `cube`, `cbrt` and `exp`; and the five
   incremental-game series helpers listed in the API table above.
+- **Milestone 3 — tetration and above.** `tetrate` and `iteratedExp`, their
+  inverses `slog` and `iteratedLog`, the fractional-layer shifts `layerAdd` and
+  `layerAdd10`, `lambertW` on both real branches, and `pentate` with `pentaLog`.
+  Plus the full `parse` grammar (see below).
 
 All of it is checked against the JavaScript reference with generated fixtures
-(34 operations, over 26,000 cases replayed from break_eternity.js 2.1.3) and
+(44 operations, over 32,000 cases replayed from break_eternity.js 2.1.3) and
 against native `double` arithmetic with an oracle test suite. The whole suite
 runs on both the Dart VM and dart2js.
 
 **Not implemented yet.** These are genuinely absent from this release:
 
-- **Tetration and everything above it**: `tetrate`, `slog`, `iteratedexp`,
-  `iteratedlog`, `layeradd`, `pentate`, and `lambertw`. The representation
-  already reaches 10^^1e308 and `parse` already reads `(e^N)M`, but the
-  operations that navigate that space are milestone 3.
+- The super-root family — `ssqrt`, `linearSroot` and `linearPentaRoot` — which
+  ask "what number, tetrated to height n, gives this?" `slog` answers the other
+  inverse question (what height), and is the one an idle game actually needs.
 - Trigonometry, `factorial` and `gamma`.
-- The full `parse` grammar (`^^`, `pentate`, `F` and `PT` notations). Until
-  then `parse` accepts exactly the forms `toString` can emit — plain decimals,
-  `MeX`, `eX` through five stacked `e`s, `(e^N)M`, `NaN`, `Infinity`,
-  `-Infinity` — and throws a `FormatException` on anything else rather than
-  guessing.
+
+### Reading and writing numbers
+
+`toString` emits plain decimals, `MeX`, `eX` through five stacked `e`s, and
+`(e^N)M`, plus `NaN`, `Infinity` and `-Infinity`. `parse` reads all of those
+back and rather more besides:
+
+```dart
+Decimal.parse('1e400');      // an exponent no double can hold
+Decimal.parse('2e3e4');      // 2e30000 — stacked exponents
+Decimal.parse('(e^7)16.5');  // the layer form, fractional N included
+Decimal.parse('10^3');       // a power
+Decimal.parse('10^^3');      // a tetration, 10^10^10
+Decimal.parse('10^^3;5');    // ...with 5 at the top of the tower
+Decimal.parse('2^^^3');      // a pentation
+Decimal.parse('3pt5');       // the PT/P shorthand: 10^^3 with 5 on top
+Decimal.parse('5f3');        // the F shorthand, payload first
+Decimal.parse('1,000,000');  // thousands separators are ignored
+```
+
+Anything else raises a `FormatException` (or gives `null` from `tryParse`)
+rather than guessing. That is stricter than break_eternity.js in two places,
+both of which are silent save-file corruption over there: JavaScript's
+`parseFloat` stops at the first character it cannot use, so the reference reads
+`5 apples` as `5` and `garbagee5` as `1e5`; and it strips only the *first*
+thousands separator, so it reads `1,000,000` as `1000`.
 
 ### Numerical fidelity
 
@@ -220,6 +246,16 @@ API is not idiomatic Dart.
 - **`==` follows IEEE 754 for NaN.** Structural equality over the
   `sign`/`layer`/`mag` triple, except that a NaN `Decimal` is never equal to
   itself — matching `double`, and matching the JS `eq`.
+- **`<=` and `>=` follow IEEE 754 too.** The JS build defines `lte` as `!gt`
+  and `gte` as `!lt`, so over there a NaN is reported as *both* "less than or
+  equal to" and "greater than or equal to" everything. Here every comparison
+  against NaN is false, as it is for `double`. The handful of places inside
+  tetration where the reference's answer depends on the difference reproduce it
+  deliberately, so the results still match.
+- **Heights and iteration counts are `num`, not `Decimal`.** `tetrate`,
+  `pentate`, `iteratedLog` and `layerAdd` take a plain number for the height,
+  exactly as the JS original does — a tower taller than 1.8e308 is not
+  representable anyway. Payloads and bases are `Decimal`.
 
 ## Credits and licence
 
