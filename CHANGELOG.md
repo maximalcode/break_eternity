@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Added `toInt()`, `toIntOrNull()`, `toIntClamped()`, `toBigInt()`, the
+  `isInteger` predicate and the `~/` operator. These have no counterpart in
+  break_eternity.js, which targets a language with one numeric type; Dart code
+  needs a real `int` for list indices, RNG bounds, `Duration` and database
+  columns. All additive — no existing behaviour changes.
+
+  `toInt()` throws rather than approximating above layer 0 (about `9e15`),
+  because that is where `mag` becomes a logarithm and no exact integer
+  survives. This is deliberately unlike `toDouble().toInt()`, which saturates
+  silently at the int64 boundary on the VM.
+
 - Documented that `pow` is not exact on integer results, so `floor(pow(x, n))`
   can be one low — the failure mode behind off-by-one cost tables and level
   curves. New README section "Do not `floor` a `pow`", plus caveats on `pow`,
