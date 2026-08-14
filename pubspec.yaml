@@ -3,7 +3,7 @@ description: >-
   Big numbers for idle and incremental games: a faithful Dart port of
   break_eternity.js, representing values up to 10^^1e308 with fast,
   constant-time arithmetic.
-version: 0.1.0
+version: 0.2.0
 repository: https://github.com/maximalcode/break_eternity
 issue_tracker: https://github.com/maximalcode/break_eternity/issues
 

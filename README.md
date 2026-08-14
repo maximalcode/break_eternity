@@ -46,7 +46,7 @@ dart pub add break_eternity
 
 ```yaml
 dependencies:
-  break_eternity: ^0.1.0
+  break_eternity: ^0.2.0
 ```
 
 ## Quick start
