@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
 
 - Added `toInt()`, `toIntOrNull()`, `toIntClamped()`, `toBigInt()`, the
   `isInteger` predicate and the `~/` operator. These have no counterpart in
