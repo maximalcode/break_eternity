@@ -2,9 +2,13 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
+  # Deliberately unfiltered. A `branches: [main]` filter here matches the PR's
+  # *base*, so a pull request stacked on another feature branch gets no CI at
+  # all — which is how #6 came to be merged unchecked into the branch below it
+  # instead of into main. Running on every pull request costs a few minutes and
+  # removes a whole class of silent gap.
   pull_request:
-    branches: [main]
 
 jobs:
   # Format, analyze and test on every supported OS and on both the oldest

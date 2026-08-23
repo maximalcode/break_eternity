@@ -23,3 +23,7 @@ benchmark/
 # The whole test tree stays out: fixtures/ alone is over 2 MB of generated
 # data, and shipping the suites without it would leave a test that cannot run.
 test/
+
+# Repo-facing contributor documentation. pub.dev does not render it, and it is
+# only useful next to the git history it describes.
+CONTRIBUTING.md
