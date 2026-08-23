@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.1
 
 - Fixed the `LICENSE` file so pub.dev recognises it. The licence was always
   MIT, but the file also carried a paragraph explaining the relationship to
