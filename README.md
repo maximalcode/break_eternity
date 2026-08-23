@@ -355,5 +355,14 @@ This package is a port of
 normalisation rules, and the algorithm-level behaviour are theirs; any bugs in
 the translation are mine.
 
-The Dart port is likewise MIT licensed. See [LICENSE](LICENSE) for the full
-text of both notices.
+The Dart port is likewise MIT licensed, so a single MIT notice covers both.
+[LICENSE](LICENSE) carries two copyright lines: one for this port, and one
+reproducing the upstream notice verbatim as that licence requires. The
+upstream licence file is kept unmodified at `reference/UPSTREAM_LICENSE` in
+the repository.
+
+That file deliberately contains the licence text and nothing else — pub.dev's
+licence detector matches the file against the OSI templates and stops
+recognising it the moment explanatory prose is appended, which costs the
+package its licence score and shows "no license was recognized" to anyone
+evaluating it.

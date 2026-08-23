@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Fixed the `LICENSE` file so pub.dev recognises it. The licence was always
+  MIT, but the file also carried a paragraph explaining the relationship to
+  break_eternity.js, and pub.dev's detector matches the file against the OSI
+  templates and gives up as soon as unrelated prose appears. 0.2.0 therefore
+  scored 0/10 for licensing and displayed "no license was recognized". The file
+  now contains the MIT text and nothing else — both copyright lines are kept,
+  which is fine — and the explanation moved to the README. Verified with
+  `pana`: 150/160 before, **160/160** after.
+
 ## 0.2.0
 
 - Added `toInt()`, `toIntOrNull()`, `toIntClamped()`, `toBigInt()`, the
